@@ -1,0 +1,15 @@
+.venv/
+__pycache__/
+*.pyc
+
+build/
+cmake-build-*/
+storage_smoke
+*.o
+*.so
+
+week1_smoke.db
+data/
+DBMS_proposal-4.txt
+
+.DS_Store
