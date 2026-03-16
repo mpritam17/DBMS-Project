@@ -1,5 +1,4 @@
 #include "buffer_pool_manager.h"
-#include <cstring>
 #include <cassert>
 
 BufferPoolManager::BufferPoolManager(size_t pool_size, StorageManager* storage_manager)
@@ -61,12 +60,10 @@ Page* BufferPoolManager::fetchPage(uint32_t page_id) {
     // Now do the expensive I/O OUTSIDE the global latch!
     page->WLock();
     if (is_dirty && old_page_id != INVALID_PAGE_ID) {
-        std::vector<uint8_t> write_data(page->getData(), page->getData() + PageLayout::kPageSize);
-        disk_manager_->writePage(old_page_id, write_data);
+        disk_manager_->writePageFrom(old_page_id, page->getData());
     }
-    
-    std::vector<uint8_t> read_data = disk_manager_->readPage(page_id);
-    std::memcpy(page->getData(), read_data.data(), PageLayout::kPageSize);
+
+    disk_manager_->readPageTo(page_id, page->getData());
     page->is_dirty_ = false;
     page->WUnlock();
     
@@ -98,10 +95,9 @@ bool BufferPoolManager::flushPage(uint32_t page_id) {
     uint32_t frame_id = it->second;
     Page* page = &pages_[frame_id];
     latch_.unlock();
-    
+
     page->WLock();
-    std::vector<uint8_t> write_data(page->getData(), page->getData() + PageLayout::kPageSize);
-    disk_manager_->writePage(page->page_id_, write_data);
+    disk_manager_->writePageFrom(page->page_id_, page->getData());
     page->is_dirty_ = false;
     page->WUnlock();
     return true;
@@ -128,11 +124,10 @@ Page* BufferPoolManager::newPage(uint32_t* page_id) {
     page_table_[*page_id] = frame_id;
     replacer_->pin(frame_id);
     latch_.unlock();
-    
+
     page->WLock();
     if (is_dirty && old_page_id != INVALID_PAGE_ID) {
-        std::vector<uint8_t> write_data(page->getData(), page->getData() + PageLayout::kPageSize);
-        disk_manager_->writePage(old_page_id, write_data);
+        disk_manager_->writePageFrom(old_page_id, page->getData());
     }
     page->is_dirty_ = true;
     page->resetMemory();
@@ -144,17 +139,17 @@ Page* BufferPoolManager::newPage(uint32_t* page_id) {
 void BufferPoolManager::flushAllPages() {
     latch_.lock();
     std::vector<Page*> flush_queue;
+    flush_queue.reserve(pool_size_);  // Avoid reallocation
     for (size_t i = 0; i < pool_size_; i++) {
         if (pages_[i].page_id_ != INVALID_PAGE_ID && pages_[i].is_dirty_) {
             flush_queue.push_back(&pages_[i]);
         }
     }
     latch_.unlock();
-    
+
     for (Page* page : flush_queue) {
         page->WLock();
-        std::vector<uint8_t> write_data(page->getData(), page->getData() + PageLayout::kPageSize);
-        disk_manager_->writePage(page->page_id_, write_data);
+        disk_manager_->writePageFrom(page->page_id_, page->getData());
         page->is_dirty_ = false;
         page->WUnlock();
     }
