@@ -43,6 +43,12 @@ public:
     std::vector<std::uint8_t> readPage(std::uint64_t page_id);
     void writePage(std::uint64_t page_id, const std::vector<std::uint8_t>& page_data);
 
+    // Zero-copy I/O interface for buffer pool manager.
+    // These methods read/write directly to/from caller's buffer without intermediate copies.
+    // More efficient for buffer pool operations that already have page buffers allocated.
+    void readPageTo(std::uint64_t page_id, uint8_t* buffer);
+    void writePageFrom(std::uint64_t page_id, const uint8_t* buffer);
+
     std::uint64_t allocatePage();
     void flush();
     

@@ -6,22 +6,22 @@ LRUReplacer::~LRUReplacer() = default;
 
 bool LRUReplacer::victim(uint32_t* frame_id) {
     std::lock_guard<std::mutex> lock(mutex_);
-    
+
     // First, evict pages that were only accessed once (e.g. table scans)
     if (!fifo_list_.empty()) {
         *frame_id = fifo_list_.back();
         fifo_map_.erase(*frame_id);
         fifo_list_.pop_back();
-        access_count_[*frame_id] = 0; // reset history on eviction
+        access_count_.erase(*frame_id); // Clean up access count
         return true;
     }
-    
+
     // If no 1-hit wonders, evict from hot set (LRU)
     if (!lru_list_.empty()) {
         *frame_id = lru_list_.back();
         lru_map_.erase(*frame_id);
         lru_list_.pop_back();
-        access_count_[*frame_id] = 0;
+        access_count_.erase(*frame_id); // Clean up access count
         return true;
     }
 

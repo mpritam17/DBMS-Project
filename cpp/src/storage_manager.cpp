@@ -60,6 +60,29 @@ void StorageManager::writePage(std::uint64_t page_id, const std::vector<std::uin
     if (page_id == num_pages_) { ++num_pages_; }
 }
 
+void StorageManager::readPageTo(std::uint64_t page_id, uint8_t* buffer) {
+    std::lock_guard<std::mutex> lock(disk_latch_);
+    ensureOpen();
+    if (page_id >= num_pages_) { throw std::out_of_range("Page id out of bounds"); }
+    const auto offset = static_cast<std::streamoff>(page_id * kPageSize);
+    file_.seekg(offset);
+    file_.read(reinterpret_cast<char*>(buffer), static_cast<std::streamsize>(kPageSize));
+    if (!file_) { throw std::runtime_error("Failed to read full page"); }
+    disk_reads++;
+}
+
+void StorageManager::writePageFrom(std::uint64_t page_id, const uint8_t* buffer) {
+    std::lock_guard<std::mutex> lock(disk_latch_);
+    ensureOpen();
+    if (page_id > num_pages_) { throw std::out_of_range("Page id cannot skip unallocated pages"); }
+    const auto offset = static_cast<std::streamoff>(page_id * kPageSize);
+    file_.seekp(offset);
+    file_.write(reinterpret_cast<const char*>(buffer), static_cast<std::streamsize>(kPageSize));
+    if (!file_) { throw std::runtime_error("Failed to write page"); }
+    disk_writes++;
+    if (page_id == num_pages_) { ++num_pages_; }
+}
+
 std::uint64_t StorageManager::allocatePage() {
     std::lock_guard<std::mutex> lock(disk_latch_);
     ensureOpen();

@@ -32,7 +32,7 @@ public:
 
 protected:
     // Find a free frame. Try free list first, then replacer.
-    bool findVictim(uint32_t* frame_id);
+    inline bool findVictim(uint32_t* frame_id);
 
 private:
     size_t pool_size_;
