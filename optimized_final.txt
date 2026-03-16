@@ -1,0 +1,9 @@
+Starting BPM Performance Benchmark...
+Buffer Pool Size: 50 frames
+Database Size: 500 pages
+------------------------------------------
+Total Time Taken: 290.541 ms
+Disk Reads (Penalties): 9791
+Disk Writes (Penalties): 0
+Cache Hit Ratio effect can be seen directly via disk IO.
+------------------------------------------

@@ -9,6 +9,8 @@ add_library(storage_manager
     cpp/src/storage_manager.cpp
     cpp/src/vec1_reader.cpp
     cpp/src/slotted_page.cpp
+    cpp/src/lru_replacer.cpp
+    cpp/src/buffer_pool_manager.cpp
 )
 
 target_include_directories(storage_manager
@@ -38,3 +40,20 @@ add_executable(packing_test
 target_link_libraries(packing_test
     PRIVATE storage_manager
 )
+
+add_executable(bpm_test
+    cpp/tests/bpm_test.cpp
+)
+
+target_link_libraries(bpm_test
+    PRIVATE storage_manager
+)
+
+add_executable(bpm_benchmark
+    cpp/tests/bpm_benchmark.cpp
+)
+
+target_link_libraries(bpm_benchmark
+    PRIVATE storage_manager
+)
+

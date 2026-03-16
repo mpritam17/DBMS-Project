@@ -5,6 +5,8 @@
 #include <fstream>
 #include <string>
 #include <vector>
+#include <mutex>
+#include <atomic>
 
 // Initial physical page layout constants for Week 1 design.
 struct PageLayout {
@@ -43,12 +45,17 @@ public:
 
     std::uint64_t allocatePage();
     void flush();
+    
+    // Performance metrics
+    static std::atomic<int> disk_reads;
+    static std::atomic<int> disk_writes;
 
 private:
     std::fstream file_;
     std::string file_path_;
     std::uint64_t num_pages_;
     bool is_open_;
+    mutable std::mutex disk_latch_;
 
     void ensureOpen() const;
 };
