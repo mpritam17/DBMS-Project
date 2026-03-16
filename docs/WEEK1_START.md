@@ -43,4 +43,5 @@ cmake --build build
 
 python3 -m pip install torch torchvision pillow numpy
 python3 scripts/extract_embeddings.py --dataset cifar10 --output data/cifar10_vecs.bin --dims 128 --limit 5000
+python3 scripts/validate_vec1.py --input data/cifar10_vecs.bin
 ```

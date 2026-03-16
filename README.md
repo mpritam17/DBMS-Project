@@ -12,6 +12,10 @@ Implementation of a page-backed R-Tree for high-dimensional image indexing.
 - `scripts/`: Python utilities for embedding extraction
 - `docs/`: planning and implementation notes
 
+## Documentation
+- `docs/WEEK1_START.md`: Week 1 goals and quickstart
+- `docs/WEEK1_IMPLEMENTATION_DETAILS.md`: detailed record of completed implementation and validation
+
 ## Python Setup
 Create and use the workspace virtual environment:
 

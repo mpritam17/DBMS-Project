@@ -1,13 +1,34 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <fstream>
 #include <string>
 #include <vector>
 
+// Initial physical page layout constants for Week 1 design.
+struct PageLayout {
+    static constexpr std::size_t kPageSize = 4096;
+    static constexpr std::size_t kHeaderSize = 64;
+    static constexpr std::size_t kPayloadSize = kPageSize - kHeaderSize;
+};
+
+struct PageHeader {
+    std::uint32_t magic;
+    std::uint16_t page_type;
+    std::uint16_t flags;
+    std::uint32_t page_id;
+    std::uint32_t item_count;
+    std::uint16_t free_space_offset;
+    std::uint16_t free_space_bytes;
+    std::uint8_t reserved[44];
+};
+
+static_assert(sizeof(PageHeader) == PageLayout::kHeaderSize, "PageHeader must be 64 bytes");
+
 class StorageManager {
 public:
-    static constexpr std::size_t kPageSize = 4096;
+    static constexpr std::size_t kPageSize = PageLayout::kPageSize;
 
     StorageManager();
     ~StorageManager();
