@@ -6,6 +6,9 @@ Implementation of a page-backed R-Tree for high-dimensional image indexing.
 - C++ storage manager for fixed-size 4KB pages
 - Python embedding extraction pipeline for image datasets
 - C++ slotted pages, `VEC1` binary file parser, and bulk loader
+- Buffer pool manager with concurrent page latching and LRU-2 style replacement
+- Initial R-Tree node page serialization and bounding-box primitives
+- Recursive R-Tree insertion with node splitting and root growth
 - Week 1 documentation for storage layout and vector export format
 
 ## Repository Layout
@@ -38,6 +41,15 @@ cmake --build build
 
 # Run the slotted-page vector packing test
 ./build/packing_test
+
+# Run the buffer-pool regression test
+./build/bpm_test
+
+# Run the R-tree node serialization test
+./build/rtree_node_test
+
+# Run the R-tree insertion and split test
+./build/rtree_insert_test
 ```
 
 ## Embedding Export and Bulk Loading
@@ -55,5 +67,5 @@ python scripts/extract_embeddings.py --dataset cifar10 --output data/cifar10_vec
 ```
 
 ## Next Milestones
-- Add a buffer pool manager with LRU replacement
-- Add R-Tree node serialization and search logic
+- Persist index metadata so an R-tree can be reopened from disk by metadata page ID
+- Week 4: end-to-end query layer connecting the KNN index to the embedding store

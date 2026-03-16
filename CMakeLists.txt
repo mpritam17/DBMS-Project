@@ -9,6 +9,8 @@ add_library(storage_manager
     cpp/src/storage_manager.cpp
     cpp/src/vec1_reader.cpp
     cpp/src/slotted_page.cpp
+    cpp/src/rtree_node.cpp
+    cpp/src/rtree_index.cpp
     cpp/src/lru_replacer.cpp
     cpp/src/buffer_pool_manager.cpp
 )
@@ -54,6 +56,30 @@ add_executable(bpm_benchmark
 )
 
 target_link_libraries(bpm_benchmark
+    PRIVATE storage_manager
+)
+
+add_executable(rtree_node_test
+    cpp/tests/rtree_node_test.cpp
+)
+
+target_link_libraries(rtree_node_test
+    PRIVATE storage_manager
+)
+
+add_executable(rtree_insert_test
+    cpp/tests/rtree_insert_test.cpp
+)
+
+target_link_libraries(rtree_insert_test
+    PRIVATE storage_manager
+)
+
+add_executable(rtree_knn_test
+    cpp/tests/rtree_knn_test.cpp
+)
+
+target_link_libraries(rtree_knn_test
     PRIVATE storage_manager
 )
 
