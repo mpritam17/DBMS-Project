@@ -163,10 +163,12 @@ The following are intentionally pending and represent next implementation work:
 
 To declare Week 1 fully complete, finish these additions:
 
-1. Implement a C++ `VEC1` parser.
-2. Implement bulk-loader from `VEC1` into fixed-size pages.
-3. Implement page slot-directory serialization/deserialization logic using the declared header format.
-4. Add at least one automated test that validates packing math (entry count/page) and reload integrity.
+1. ~~Implement a C++ `VEC1` parser.~~ (Done: `cpp/src/vec1_reader.cpp`)
+2. ~~Implement bulk-loader from `VEC1` into fixed-size pages.~~ (Done: `cpp/tools/bulk_load.cpp`)
+3. ~~Implement page slot-directory serialization/deserialization logic using the declared header format.~~ (Done: `cpp/src/slotted_page.cpp`)
+4. ~~Add at least one automated test that validates packing math (entry count/page) and reload integrity.~~ (Done: `cpp/tests/packing_test.cpp`)
+
+Week 1 goals are now 100% complete!
 
 ## 6. File Inventory (Implemented Artifacts)
 
