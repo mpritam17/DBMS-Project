@@ -1,6 +1,14 @@
 #include "buffer_pool_manager.h"
 #include <cassert>
 
+// Buffer Pool Manager Implementation
+// Key optimizations:
+// 1. Zero-copy I/O: Uses direct pointer-based I/O (readPageTo/writePageFrom)
+//    instead of vector copies to eliminate 4KB allocations on every write
+// 2. Fine-grained locking: Global latch protects metadata only; expensive
+//    disk I/O happens outside global latch with per-page locks
+// 3. LRU-2 eviction: Two-queue design prevents sequential scans from evicting hot pages
+
 BufferPoolManager::BufferPoolManager(size_t pool_size, StorageManager* storage_manager)
     : pool_size_(pool_size), disk_manager_(storage_manager) {
     pages_ = std::make_unique<Page[]>(pool_size_);
