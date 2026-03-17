@@ -21,6 +21,11 @@ struct BoundingBox {
     BoundingBox expandedToInclude(const BoundingBox& other) const;
     double enlargementToInclude(const BoundingBox& other) const;
 
+    // Log-space volume and enlargement — numerically stable at high dimensions
+    // where the product of edge lengths underflows to 0.0.
+    double logHyperVolume() const;
+    double logEnlargementRatio(const BoundingBox& other) const;
+
     static BoundingBox point(const std::vector<float>& coordinates);
 };
 

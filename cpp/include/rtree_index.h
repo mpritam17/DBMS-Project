@@ -10,7 +10,11 @@
 
 class RTreeIndex {
 public:
+    // Create a brand-new index. Allocates a metadata page as the first page.
     RTreeIndex(BufferPoolManager* buffer_pool_manager, uint16_t dimensions);
+
+    // Reopen an existing index from a previously persisted metadata page.
+    RTreeIndex(BufferPoolManager* buffer_pool_manager, uint32_t meta_page_id);
 
     void insert(const BoundingBox& mbr, uint64_t value);
     void insertPoint(const std::vector<float>& coordinates, uint64_t value);
@@ -20,6 +24,7 @@ public:
         const std::vector<float>& query, std::size_t k) const;
 
     uint32_t getRootPageId() const;
+    uint32_t getMetaPageId() const;
     uint16_t getDimensions() const;
     std::size_t getHeight() const;
 
@@ -34,10 +39,12 @@ private:
     uint16_t dimensions_;
     uint32_t root_page_id_;
     std::size_t height_;
+    uint32_t meta_page_id_;
 
     RTreeNodePage loadNode(uint32_t page_id) const;
     void writeNode(const RTreeNodePage& node) const;
     RTreeNodePage allocateNode(bool is_leaf) const;
+    void writeMetadata() const;
 
     SplitResult insertRecursive(uint32_t page_id, const RTreeEntry& entry);
     SplitResult splitAndPersistNode(const RTreeNodePage& node, const std::vector<RTreeEntry>& entries);

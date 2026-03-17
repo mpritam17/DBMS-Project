@@ -10,7 +10,7 @@
 
 // Initial physical page layout constants for Week 1 design.
 struct PageLayout {
-    static constexpr std::size_t kPageSize = 4096;
+    static constexpr std::size_t kPageSize = 16384;
     static constexpr std::size_t kHeaderSize = 64;
     static constexpr std::size_t kPayloadSize = kPageSize - kHeaderSize;
 };

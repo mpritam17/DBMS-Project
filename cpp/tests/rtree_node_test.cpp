@@ -57,7 +57,7 @@ int main() {
 
     BoundingBox hot_box = BoundingBox::point(std::vector<float>(128, 1.0f));
     RTreeNodePage high_dim_node(99, 128, false);
-    assert(high_dim_node.getMaxEntries() == 3);
+    assert(high_dim_node.getMaxEntries() == 15);
     for (uint16_t index = 0; index < high_dim_node.getMaxEntries(); ++index) {
         assert(high_dim_node.addEntry(hot_box, index));
     }

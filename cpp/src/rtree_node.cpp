@@ -4,6 +4,7 @@
 #include <cstring>
 #include <limits>
 #include <stdexcept>
+#include <cmath>
 
 namespace {
 
@@ -62,6 +63,47 @@ double BoundingBox::enlargementToInclude(const BoundingBox& other) const {
 
 BoundingBox BoundingBox::point(const std::vector<float>& coordinates) {
     return BoundingBox(coordinates, coordinates);
+}
+
+double BoundingBox::logHyperVolume() const {
+    if (lower_bounds.empty()) {
+        return 0.0;
+    }
+    double log_vol = 0.0;
+    for (std::size_t i = 0; i < lower_bounds.size(); ++i) {
+        double edge = static_cast<double>(upper_bounds[i]) - static_cast<double>(lower_bounds[i]);
+        if (edge <= 0.0) {
+            return -std::numeric_limits<double>::infinity();
+        }
+        log_vol += std::log(edge);
+    }
+    return log_vol;
+}
+
+// Returns log(V_expanded / V_original).  A smaller value means the MBR needs
+// less relative growth to accommodate `other`, which is the correct high-dim
+// criterion when the absolute product of edge lengths underflows to 0.
+double BoundingBox::logEnlargementRatio(const BoundingBox& other) const {
+    if (dimensions() != other.dimensions()) {
+        throw std::invalid_argument("Bounding box dimension mismatch");
+    }
+    double ratio = 0.0;
+    for (std::size_t i = 0; i < lower_bounds.size(); ++i) {
+        double orig_lo = static_cast<double>(lower_bounds[i]);
+        double orig_hi = static_cast<double>(upper_bounds[i]);
+        double exp_lo  = std::min(orig_lo, static_cast<double>(other.lower_bounds[i]));
+        double exp_hi  = std::max(orig_hi, static_cast<double>(other.upper_bounds[i]));
+        double orig_edge = orig_hi - orig_lo;
+        double exp_edge  = exp_hi  - exp_lo;
+        if (orig_edge <= 0.0 && exp_edge <= 0.0) {
+            continue;   // both zero — no change in this dimension
+        }
+        if (orig_edge <= 0.0) {
+            return std::numeric_limits<double>::infinity();  // zero→nonzero always costs more
+        }
+        ratio += std::log(exp_edge / orig_edge);
+    }
+    return ratio;
 }
 
 RTreeNodePage::RTreeNodePage(uint32_t page_id, uint16_t dimensions, bool is_leaf) {

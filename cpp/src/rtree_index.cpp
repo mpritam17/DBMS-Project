@@ -11,6 +11,16 @@
 namespace {
 
 constexpr uint32_t kInvalidPageId = std::numeric_limits<uint32_t>::max();
+constexpr uint32_t kMetaMagic = 0x52544958;  // 'RTIX'
+
+struct MetaHeader {
+    uint32_t magic;
+    uint32_t root_page_id;
+    uint32_t height;
+    uint16_t dimensions;
+    uint8_t  pad[50];
+};
+static_assert(sizeof(MetaHeader) == 64, "MetaHeader must be 64 bytes");
 
 double boxCenter(const BoundingBox& box, std::size_t axis) {
     return (static_cast<double>(box.lower_bounds[axis]) + static_cast<double>(box.upper_bounds[axis])) / 2.0;
@@ -50,7 +60,8 @@ BoundingBox computeEntriesMBR(const std::vector<RTreeEntry>& entries) {
 } // namespace
 
 RTreeIndex::RTreeIndex(BufferPoolManager* buffer_pool_manager, uint16_t dimensions)
-    : buffer_pool_manager_(buffer_pool_manager), dimensions_(dimensions), root_page_id_(kInvalidPageId), height_(1) {
+    : buffer_pool_manager_(buffer_pool_manager), dimensions_(dimensions),
+      root_page_id_(kInvalidPageId), height_(1), meta_page_id_(kInvalidPageId) {
     if (buffer_pool_manager_ == nullptr) {
         throw std::invalid_argument("RTreeIndex requires a valid buffer pool manager");
     }
@@ -58,8 +69,51 @@ RTreeIndex::RTreeIndex(BufferPoolManager* buffer_pool_manager, uint16_t dimensio
         throw std::invalid_argument("RTreeIndex requires at least one dimension");
     }
 
+    // Allocate the metadata page first so callers can reopen the index by this id.
+    uint32_t meta_id = kInvalidPageId;
+    Page* meta_raw = buffer_pool_manager_->newPage(&meta_id);
+    if (meta_raw == nullptr) {
+        throw std::runtime_error("Failed to allocate metadata page");
+    }
+    meta_page_id_ = meta_id;
+    buffer_pool_manager_->unpinPage(meta_id, false);
+
     RTreeNodePage root = allocateNode(true);
     root_page_id_ = root.getPageId();
+    writeMetadata();
+}
+
+RTreeIndex::RTreeIndex(BufferPoolManager* buffer_pool_manager, uint32_t meta_page_id)
+    : buffer_pool_manager_(buffer_pool_manager), dimensions_(0),
+      root_page_id_(kInvalidPageId), height_(0), meta_page_id_(meta_page_id) {
+    if (buffer_pool_manager_ == nullptr) {
+        throw std::invalid_argument("RTreeIndex requires a valid buffer pool manager");
+    }
+
+    Page* page = buffer_pool_manager_->fetchPage(meta_page_id);
+    if (page == nullptr) {
+        throw std::runtime_error("Failed to fetch metadata page");
+    }
+
+    page->RLock();
+    const uint8_t* data = page->getData();
+    const PageHeader* ph = reinterpret_cast<const PageHeader*>(data);
+    if (ph->magic != RTREE_PAGE_MAGIC) {
+        page->RUnlock();
+        buffer_pool_manager_->unpinPage(meta_page_id, false);
+        throw std::runtime_error("Invalid metadata page: bad page magic");
+    }
+    const MetaHeader* mh = reinterpret_cast<const MetaHeader*>(data + sizeof(PageHeader));
+    if (mh->magic != kMetaMagic) {
+        page->RUnlock();
+        buffer_pool_manager_->unpinPage(meta_page_id, false);
+        throw std::runtime_error("Invalid metadata page: bad meta magic");
+    }
+    root_page_id_ = mh->root_page_id;
+    height_       = static_cast<std::size_t>(mh->height);
+    dimensions_   = mh->dimensions;
+    page->RUnlock();
+    buffer_pool_manager_->unpinPage(meta_page_id, false);
 }
 
 void RTreeIndex::insert(const BoundingBox& mbr, uint64_t value) {
@@ -85,6 +139,7 @@ void RTreeIndex::insert(const BoundingBox& mbr, uint64_t value) {
 
     root_page_id_ = new_root.getPageId();
     height_++;
+    writeMetadata();
 }
 
 void RTreeIndex::insertPoint(const std::vector<float>& coordinates, uint64_t value) {
@@ -95,12 +150,43 @@ uint32_t RTreeIndex::getRootPageId() const {
     return root_page_id_;
 }
 
+uint32_t RTreeIndex::getMetaPageId() const {
+    return meta_page_id_;
+}
+
 uint16_t RTreeIndex::getDimensions() const {
     return dimensions_;
 }
 
 std::size_t RTreeIndex::getHeight() const {
     return height_;
+}
+
+void RTreeIndex::writeMetadata() const {
+    Page* page = buffer_pool_manager_->fetchPage(meta_page_id_);
+    if (page == nullptr) {
+        throw std::runtime_error("Failed to fetch metadata page for write");
+    }
+
+    page->WLock();
+    uint8_t* data = page->getData();
+    std::memset(data, 0, PageLayout::kPageSize);
+
+    PageHeader ph{};
+    ph.magic     = RTREE_PAGE_MAGIC;
+    ph.page_type = 0;
+    ph.page_id   = meta_page_id_;
+    std::memcpy(data, &ph, sizeof(PageHeader));
+
+    MetaHeader mh{};
+    mh.magic        = kMetaMagic;
+    mh.root_page_id = root_page_id_;
+    mh.height       = static_cast<uint32_t>(height_);
+    mh.dimensions   = dimensions_;
+    std::memcpy(data + sizeof(PageHeader), &mh, sizeof(MetaHeader));
+
+    page->WUnlock();
+    buffer_pool_manager_->unpinPage(meta_page_id_, true);
 }
 
 std::vector<std::pair<float, uint64_t>> RTreeIndex::searchKNN(
@@ -304,18 +390,20 @@ std::size_t RTreeIndex::chooseSubtree(const std::vector<RTreeEntry>& entries, co
         throw std::runtime_error("Cannot choose subtree from empty internal node");
     }
 
+    // Use log-space enlargement ratio so high-dimensional volumes (128D) do not
+    // underflow to 0.0 and collapse all choices to the first child.
     std::size_t best_index = 0;
-    double best_enlargement = entries[0].mbr.enlargementToInclude(target);
-    double best_volume = entries[0].mbr.hyperVolume();
+    double best_log_ratio  = entries[0].mbr.logEnlargementRatio(target);
+    double best_log_vol    = entries[0].mbr.logHyperVolume();
 
     for (std::size_t index = 1; index < entries.size(); ++index) {
-        const double enlargement = entries[index].mbr.enlargementToInclude(target);
-        const double volume = entries[index].mbr.hyperVolume();
-        if (enlargement < best_enlargement ||
-            (std::abs(enlargement - best_enlargement) < 1e-9 && volume < best_volume)) {
-            best_index = index;
-            best_enlargement = enlargement;
-            best_volume = volume;
+        const double log_ratio = entries[index].mbr.logEnlargementRatio(target);
+        const double log_vol   = entries[index].mbr.logHyperVolume();
+        if (log_ratio < best_log_ratio ||
+            (std::abs(log_ratio - best_log_ratio) < 1e-9 && log_vol < best_log_vol)) {
+            best_index    = index;
+            best_log_ratio = log_ratio;
+            best_log_vol   = log_vol;
         }
     }
 

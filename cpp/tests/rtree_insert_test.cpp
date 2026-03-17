@@ -50,9 +50,9 @@ int main() {
 
     {
         BufferPoolManager buffer_pool_manager(16, &disk_manager);
-        RTreeIndex index(&buffer_pool_manager, 128);
-
-        for (uint64_t value = 0; value < 10; ++value) {
+        RTreeIndex index(&buffer_pool_manager, static_cast<uint16_t>(128));
+        // Insert 32 points so we exceed the 15-entry page capacity and force splits.
+        for (uint64_t value = 0; value < 32; ++value) {
             std::vector<float> point(128, static_cast<float>(value));
             point[1] = static_cast<float>(value * 2);
             index.insertPoint(point, value);
@@ -66,16 +66,16 @@ int main() {
 
         BoundingBox root_mbr = root.computeNodeMBR();
         assert(root_mbr.lower_bounds[0] == 0.0f);
-        assert(root_mbr.upper_bounds[0] == 9.0f);
+        assert(root_mbr.upper_bounds[0] == 31.0f);
         assert(root_mbr.lower_bounds[1] == 0.0f);
-        assert(root_mbr.upper_bounds[1] == 18.0f);
+        assert(root_mbr.upper_bounds[1] == 62.0f);
 
         std::vector<uint64_t> values;
         collectLeafValues(buffer_pool_manager, index.getRootPageId(), values);
         std::sort(values.begin(), values.end());
 
-        assert(values.size() == 10);
-        for (uint64_t value = 0; value < 10; ++value) {
+        assert(values.size() == 32);
+        for (uint64_t value = 0; value < 32; ++value) {
             assert(values[value] == value);
         }
 

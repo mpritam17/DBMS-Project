@@ -70,9 +70,7 @@ static void test_2d_axis(const char* db_path) {
     StorageManager sm;
     sm.open(db_path);
     BufferPoolManager bpm(64, &sm);
-    RTreeIndex idx(&bpm, 2);
-
-    // Insert points (i*10, 0) with value=i for i=0..9
+    RTreeIndex idx(&bpm, static_cast<uint16_t>(2));
     for (int i = 0; i < 10; ++i) {
         idx.insertPoint({static_cast<float>(i * 10), 0.0f}, static_cast<uint64_t>(i));
     }
@@ -115,7 +113,7 @@ static void test_vs_brute_force(const char* db_path) {
     StorageManager sm;
     sm.open(db_path);
     BufferPoolManager bpm(128, &sm);
-    RTreeIndex idx(&bpm, 2);
+    RTreeIndex idx(&bpm, static_cast<uint16_t>(2));
 
     const int N = 50;
     std::vector<std::vector<float>> points(N, std::vector<float>(2));
@@ -160,7 +158,7 @@ static void test_128d(const char* db_path) {
     StorageManager sm;
     sm.open(db_path);
     BufferPoolManager bpm(256, &sm);
-    RTreeIndex idx(&bpm, 128);
+    RTreeIndex idx(&bpm, static_cast<uint16_t>(128));
 
     const int N = 20;
     std::vector<std::vector<float>> points(N, std::vector<float>(128, 0.0f));

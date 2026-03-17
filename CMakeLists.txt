@@ -83,3 +83,11 @@ target_link_libraries(rtree_knn_test
     PRIVATE storage_manager
 )
 
+add_executable(rtree_metadata_test
+    cpp/tests/rtree_metadata_test.cpp
+)
+
+target_link_libraries(rtree_metadata_test
+    PRIVATE storage_manager
+)
+
