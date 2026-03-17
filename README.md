@@ -69,3 +69,15 @@ python scripts/extract_embeddings.py --dataset cifar10 --output data/cifar10_vec
 ## Next Milestones
 - Persist index metadata so an R-tree can be reopened from disk by metadata page ID
 - Week 4: end-to-end query layer connecting the KNN index to the embedding store
+
+## Week 4 Query Benchmark
+
+Build and run the Week 4 integration benchmark:
+
+```bash
+cmake -S . -B build
+cmake --build build
+./build/week4_query_benchmark sample.db 0 10
+```
+
+It reads vectors from the slotted-page embedding store, builds an R-tree query layer through the buffer pool, executes KNN, and compares R-tree latency/recall against brute-force search.

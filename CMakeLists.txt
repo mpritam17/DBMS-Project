@@ -91,3 +91,11 @@ target_link_libraries(rtree_metadata_test
     PRIVATE storage_manager
 )
 
+add_executable(week4_query_benchmark
+    cpp/tools/week4_query_benchmark.cpp
+)
+
+target_link_libraries(week4_query_benchmark
+    PRIVATE storage_manager
+)
+
