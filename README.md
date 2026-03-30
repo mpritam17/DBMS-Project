@@ -78,6 +78,42 @@ Build and run the Week 4 integration benchmark:
 cmake -S . -B build
 cmake --build build
 ./build/week4_query_benchmark sample.db 0 10
+./build/week4_query_benchmark sample.db all 10 week4_metrics.csv
 ```
 
 It reads vectors from the slotted-page embedding store, builds an R-tree query layer through the buffer pool, executes KNN, and compares R-tree latency/recall against brute-force search.
+
+## Week 4 MERN Integration
+
+A MERN scaffold is available in `mern/`.
+
+Start backend:
+
+```bash
+cd mern/backend
+npm install
+cp .env.example .env
+npm run dev
+```
+
+Start frontend:
+
+```bash
+cd mern/frontend
+npm install
+npm run dev
+```
+
+Backend query endpoint:
+
+```bash
+curl -X POST http://localhost:5000/api/query \
+  -H "Content-Type: application/json" \
+  -d '{"queryId":0,"k":10,"dbPath":"/home/quantumec/Documents/DBMS_term_project/sample.db"}'
+```
+
+Fallback lightweight Python API remains available:
+
+```bash
+python scripts/week4_query_api.py --db sample.db --host 127.0.0.1 --port 8080
+```

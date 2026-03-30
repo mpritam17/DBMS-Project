@@ -1,0 +1,5 @@
+Loading VEC1 file:
+  Count: 5000
+  Dims: 64
+Successfully loaded 5000 entries into 103 pages.
+bash: line 1: 31578 Killed                     python scripts/image_search_api.py --vec-file data/sample_vecs.bin --image-dir data/sample_images --pca-model data/pca_model.npz > api_debug.log 2>&1

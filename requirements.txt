@@ -2,3 +2,6 @@ numpy
 pillow
 torch
 torchvision
+scikit-learn
+flask
+flask-cors

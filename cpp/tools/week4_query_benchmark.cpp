@@ -8,6 +8,8 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <stdexcept>
 #include <string>
@@ -23,6 +25,15 @@ constexpr uint32_t kSlottedPageMagic = 0x50414745;  // "PAGE"
 struct StoredVector {
     uint64_t id;
     std::vector<float> values;
+};
+
+struct QueryMetrics {
+    uint64_t query_id;
+    long long rtree_us;
+    long long brute_us;
+    std::size_t hits;
+    std::size_t denom;
+    double recall;
 };
 
 float l2Distance(const std::vector<float>& a, const std::vector<float>& b) {
@@ -120,28 +131,80 @@ std::size_t recallAtK(
     return hits;
 }
 
+QueryMetrics benchmarkSingleQuery(
+    const RTreeIndex& index,
+    const std::vector<StoredVector>& unique_vectors,
+    const std::unordered_map<uint64_t, std::vector<float>>& by_id,
+    uint64_t query_id,
+    std::size_t k) {
+    const auto query_it = by_id.find(query_id);
+    if (query_it == by_id.end()) {
+        throw std::runtime_error("query_id not found in embedding store");
+    }
+    const std::vector<float>& query = query_it->second;
+
+    const auto rtree_start = std::chrono::high_resolution_clock::now();
+    const auto rtree_results = index.searchKNN(query, k);
+    const auto rtree_end = std::chrono::high_resolution_clock::now();
+
+    const auto brute_start = std::chrono::high_resolution_clock::now();
+    const auto brute_results = bruteForceKNN(unique_vectors, query, k);
+    const auto brute_end = std::chrono::high_resolution_clock::now();
+
+    const auto rtree_us = std::chrono::duration_cast<std::chrono::microseconds>(rtree_end - rtree_start).count();
+    const auto brute_us = std::chrono::duration_cast<std::chrono::microseconds>(brute_end - brute_start).count();
+
+    const std::size_t hits = recallAtK(rtree_results, brute_results);
+    const std::size_t denom = std::min(rtree_results.size(), brute_results.size());
+    const double recall = denom == 0 ? 0.0 : static_cast<double>(hits) / static_cast<double>(denom);
+
+    return {query_id, rtree_us, brute_us, hits, denom, recall};
+}
+
+void writeCsv(const std::string& csv_path, const std::vector<QueryMetrics>& rows) {
+    std::ofstream out(csv_path);
+    if (!out.is_open()) {
+        throw std::runtime_error("Failed to open CSV output path: " + csv_path);
+    }
+
+    out << "query_id,rtree_us,brute_us,hits,denom,recall\n";
+    for (const auto& row : rows) {
+        out << row.query_id << ","
+            << row.rtree_us << ","
+            << row.brute_us << ","
+            << row.hits << ","
+            << row.denom << ","
+            << row.recall << "\n";
+    }
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
     if (argc < 4) {
-        std::cerr << "Usage: " << argv[0] << " <db_file> <query_id> <k>\n";
+        std::cerr << "Usage: " << argv[0] << " <db_file> <query_id|all> <k> [csv_output_path]\n";
         return 1;
     }
 
     const std::string db_file = argv[1];
-    const uint64_t query_id = std::stoull(argv[2]);
+    const std::string query_selector = argv[2];
     const std::size_t k = static_cast<std::size_t>(std::stoull(argv[3]));
+    const bool emit_csv = argc >= 5;
+    const std::string csv_path = emit_csv ? argv[4] : std::string();
     if (k == 0) {
         std::cerr << "k must be >= 1\n";
         return 1;
     }
 
     try {
-        StorageManager storage;
-        storage.open(db_file);
-
         uint16_t dims = 0;
-        std::vector<StoredVector> vectors = loadVectorsFromEmbeddingStore(storage, &dims);
+        std::vector<StoredVector> vectors;
+        {
+            // Read vectors from the embedding store only.
+            StorageManager storage;
+            storage.open(db_file);
+            vectors = loadVectorsFromEmbeddingStore(storage, &dims);
+        }
         if (vectors.empty() || dims == 0) {
             throw std::runtime_error("No vectors found in slotted-page embedding store");
         }
@@ -161,16 +224,27 @@ int main(int argc, char** argv) {
             return a.id < b.id;
         });
 
-        const auto query_it = by_id.find(query_id);
-        if (query_it == by_id.end()) {
-            throw std::runtime_error("query_id not found in embedding store");
+        std::vector<uint64_t> query_ids;
+        if (query_selector == "all") {
+            query_ids.reserve(unique_vectors.size());
+            for (const auto& v : unique_vectors) {
+                query_ids.push_back(v.id);
+            }
+        } else {
+            query_ids.push_back(std::stoull(query_selector));
         }
-        const std::vector<float>& query = query_it->second;
 
         StorageManager::disk_reads = 0;
         StorageManager::disk_writes = 0;
 
-        BufferPoolManager bpm(64, &storage);
+        // Build the R-tree in a separate temp DB to avoid mixing index pages
+        // with embedding slotted pages in the source file.
+        const std::string index_db_file = db_file + ".rtree_tmp.db";
+        std::filesystem::remove(index_db_file);
+        StorageManager index_storage;
+        index_storage.open(index_db_file);
+
+        BufferPoolManager bpm(64, &index_storage);
         RTreeIndex index(&bpm, dims);
 
         for (const auto& v : unique_vectors) {
@@ -178,40 +252,63 @@ int main(int argc, char** argv) {
         }
         bpm.flushAllPages();
 
-        const auto rtree_start = std::chrono::high_resolution_clock::now();
-        const auto rtree_results = index.searchKNN(query, k);
-        const auto rtree_end = std::chrono::high_resolution_clock::now();
+        std::vector<QueryMetrics> all_metrics;
+        all_metrics.reserve(query_ids.size());
 
-        const auto brute_start = std::chrono::high_resolution_clock::now();
-        const auto brute_results = bruteForceKNN(unique_vectors, query, k);
-        const auto brute_end = std::chrono::high_resolution_clock::now();
+        for (uint64_t qid : query_ids) {
+            all_metrics.push_back(benchmarkSingleQuery(index, unique_vectors, by_id, qid, k));
+        }
 
-        const auto rtree_us = std::chrono::duration_cast<std::chrono::microseconds>(rtree_end - rtree_start).count();
-        const auto brute_us = std::chrono::duration_cast<std::chrono::microseconds>(brute_end - brute_start).count();
+        long long total_rtree_us = 0;
+        long long total_brute_us = 0;
+        std::size_t total_hits = 0;
+        std::size_t total_denom = 0;
+        for (const auto& m : all_metrics) {
+            total_rtree_us += m.rtree_us;
+            total_brute_us += m.brute_us;
+            total_hits += m.hits;
+            total_denom += m.denom;
+        }
 
-        const std::size_t hits = recallAtK(rtree_results, brute_results);
-        const std::size_t denom = std::min(rtree_results.size(), brute_results.size());
-        const double recall = denom == 0 ? 0.0 : static_cast<double>(hits) / static_cast<double>(denom);
+        const double avg_rtree_us = all_metrics.empty() ? 0.0
+            : static_cast<double>(total_rtree_us) / static_cast<double>(all_metrics.size());
+        const double avg_brute_us = all_metrics.empty() ? 0.0
+            : static_cast<double>(total_brute_us) / static_cast<double>(all_metrics.size());
+        const double avg_recall = total_denom == 0 ? 0.0
+            : static_cast<double>(total_hits) / static_cast<double>(total_denom);
 
         std::cout << "Week 4 Query Benchmark\n";
         std::cout << "  vectors(raw): " << vectors.size() << "\n";
         std::cout << "  vectors(unique): " << unique_vectors.size() << "\n";
         std::cout << "  dims: " << dims << "\n";
-        std::cout << "  query_id: " << query_id << "\n";
+        std::cout << "  query_selector: " << query_selector << "\n";
+        std::cout << "  queries_run: " << all_metrics.size() << "\n";
         std::cout << "  k: " << k << "\n";
         std::cout << "\n";
-        std::cout << "R-tree KNN latency: " << rtree_us << " us\n";
-        std::cout << "Brute-force latency: " << brute_us << " us\n";
-        std::cout << "Recall@" << denom << ": " << recall << " (" << hits << "/" << denom << ")\n";
+        std::cout << "Average R-tree KNN latency: " << avg_rtree_us << " us\n";
+        std::cout << "Average brute-force latency: " << avg_brute_us << " us\n";
+        std::cout << "Average recall@k: " << avg_recall << " (" << total_hits << "/" << total_denom << ")\n";
         std::cout << "Disk I/O counters (StorageManager): reads=" << StorageManager::disk_reads.load()
                   << ", writes=" << StorageManager::disk_writes.load() << "\n";
         std::cout << "RTree metadata page id: " << index.getMetaPageId() << "\n";
 
-        const std::size_t print_n = std::min<std::size_t>(5, rtree_results.size());
-        std::cout << "\nTop " << print_n << " R-tree results (distance, id):\n";
+        const std::size_t print_n = std::min<std::size_t>(5, all_metrics.size());
+        std::cout << "\nFirst " << print_n << " per-query rows (query_id, rtree_us, brute_us, recall):\n";
         for (std::size_t i = 0; i < print_n; ++i) {
-            std::cout << "  " << i + 1 << ". " << rtree_results[i].first << ", " << rtree_results[i].second << "\n";
+            std::cout << "  " << i + 1 << ". "
+                      << all_metrics[i].query_id << ", "
+                      << all_metrics[i].rtree_us << ", "
+                      << all_metrics[i].brute_us << ", "
+                      << all_metrics[i].recall << "\n";
         }
+
+        if (emit_csv) {
+            writeCsv(csv_path, all_metrics);
+            std::cout << "CSV written: " << csv_path << "\n";
+        }
+
+        // Index data is temporary for benchmarking only.
+        std::filesystem::remove(index_db_file);
 
         // StorageManager closes in its destructor after BPM/index teardown.
     } catch (const std::exception& ex) {

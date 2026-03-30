@@ -1,0 +1,213 @@
+:root {
+  font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+  color: #122b39;
+  background: #f4f8fb;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+}
+
+.page {
+  max-width: 1100px;
+  margin: 24px auto;
+  padding: 0 16px 32px;
+}
+
+header h1 {
+  margin-bottom: 8px;
+}
+
+.card {
+  background: #ffffff;
+  border: 1px solid #dce7ee;
+  border-radius: 12px;
+  padding: 16px;
+  margin-top: 16px;
+}
+
+form.card {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
+  align-items: end;
+}
+
+label {
+  display: grid;
+  gap: 6px;
+  font-weight: 600;
+}
+
+input {
+  border: 1px solid #c6d5df;
+  border-radius: 8px;
+  padding: 8px 10px;
+}
+
+input[type="file"] {
+  padding: 6px;
+}
+
+button {
+  background: #0078d4;
+  color: #ffffff;
+  border: none;
+  border-radius: 8px;
+  padding: 10px 14px;
+  cursor: pointer;
+  font-weight: 700;
+}
+
+button:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 8px;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+th,
+td {
+  border: 1px solid #dce7ee;
+  padding: 8px;
+  text-align: left;
+}
+
+.error {
+  color: #b00020;
+  font-weight: 600;
+}
+
+/* Tabs */
+.tabs {
+  display: flex;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.tabs button {
+  background: #e8f0f6;
+  color: #122b39;
+  border: 1px solid #c6d5df;
+}
+
+.tabs button.active {
+  background: #0078d4;
+  color: #ffffff;
+  border-color: #0078d4;
+}
+
+/* Image Search */
+.upload-zone {
+  border: 2px dashed #c6d5df;
+  border-radius: 12px;
+  padding: 24px;
+  text-align: center;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.upload-zone:hover {
+  border-color: #0078d4;
+  background: #f0f7ff;
+}
+
+.upload-zone.drag-over {
+  border-color: #0078d4;
+  background: #e0f0ff;
+}
+
+.preview-image {
+  max-width: 200px;
+  max-height: 200px;
+  border-radius: 8px;
+  margin-top: 12px;
+}
+
+.results-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 16px;
+  margin-top: 16px;
+}
+
+.result-card {
+  background: #f8fafc;
+  border: 1px solid #dce7ee;
+  border-radius: 8px;
+  padding: 8px;
+  text-align: center;
+}
+
+.result-card img {
+  width: 100%;
+  aspect-ratio: 1;
+  object-fit: cover;
+  border-radius: 6px;
+  background: #eee;
+}
+
+.result-card .meta {
+  margin-top: 6px;
+  font-size: 12px;
+  color: #666;
+}
+
+.timing-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.timing-item {
+  background: #f0f7ff;
+  border-radius: 6px;
+  padding: 8px;
+  text-align: center;
+}
+
+.timing-item .label {
+  font-size: 11px;
+  color: #666;
+  text-transform: uppercase;
+}
+
+.timing-item .value {
+  font-size: 18px;
+  font-weight: 700;
+  color: #0078d4;
+}
+
+.service-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: 12px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.service-status.available {
+  background: #d4edda;
+  color: #155724;
+}
+
+.service-status.unavailable {
+  background: #f8d7da;
+  color: #721c24;
+}

@@ -26,6 +26,20 @@ double boxCenter(const BoundingBox& box, std::size_t axis) {
     return (static_cast<double>(box.lower_bounds[axis]) + static_cast<double>(box.upper_bounds[axis])) / 2.0;
 }
 
+double boxMargin(const BoundingBox& box) {
+    double margin = 0.0;
+    for (std::size_t i = 0; i < box.lower_bounds.size(); ++i) {
+        const double edge = static_cast<double>(box.upper_bounds[i]) - static_cast<double>(box.lower_bounds[i]);
+        margin += std::max(0.0, edge);
+    }
+    return margin;
+}
+
+double enlargementScore(const BoundingBox& current, const BoundingBox& incoming) {
+    const BoundingBox expanded = current.expandedToInclude(incoming);
+    return boxMargin(expanded) - boxMargin(current);
+}
+
 // Minimum Euclidean distance from a query point to the surface of an MBR.
 // Returns 0 when the query is inside the box.
 double minDistToBox(const std::vector<float>& query, const BoundingBox& box) {
@@ -341,15 +355,121 @@ RTreeIndex::SplitResult RTreeIndex::splitAndPersistNode(const RTreeNodePage& nod
         throw std::invalid_argument("splitAndPersistNode called without overflow");
     }
 
-    std::vector<RTreeEntry> ordered = entries;
-    std::size_t axis = chooseSplitAxis(ordered);
-    std::sort(ordered.begin(), ordered.end(), [axis](const RTreeEntry& left, const RTreeEntry& right) {
-        return boxCenter(left.mbr, axis) < boxCenter(right.mbr, axis);
-    });
+    // Quadratic split: choose the seed pair that would waste the most space if
+    // kept together, then assign remaining entries by largest enlargement delta.
+    const std::size_t n = entries.size();
+    const std::size_t min_entries = n / 2;
 
-    const std::size_t split_index = ordered.size() / 2;
-    std::vector<RTreeEntry> left_entries(ordered.begin(), ordered.begin() + static_cast<std::ptrdiff_t>(split_index));
-    std::vector<RTreeEntry> right_entries(ordered.begin() + static_cast<std::ptrdiff_t>(split_index), ordered.end());
+    std::size_t seed_a = 0;
+    std::size_t seed_b = 1;
+    double best_waste = -std::numeric_limits<double>::infinity();
+    for (std::size_t i = 0; i < n; ++i) {
+        for (std::size_t j = i + 1; j < n; ++j) {
+            const BoundingBox combined = entries[i].mbr.expandedToInclude(entries[j].mbr);
+            const double waste = boxMargin(combined) - boxMargin(entries[i].mbr) - boxMargin(entries[j].mbr);
+            if (waste > best_waste) {
+                best_waste = waste;
+                seed_a = i;
+                seed_b = j;
+            }
+        }
+    }
+
+    std::vector<bool> assigned(n, false);
+    std::vector<RTreeEntry> left_entries;
+    std::vector<RTreeEntry> right_entries;
+    left_entries.reserve(n);
+    right_entries.reserve(n);
+
+    left_entries.push_back(entries[seed_a]);
+    right_entries.push_back(entries[seed_b]);
+    assigned[seed_a] = true;
+    assigned[seed_b] = true;
+
+    BoundingBox left_mbr = entries[seed_a].mbr;
+    BoundingBox right_mbr = entries[seed_b].mbr;
+    std::size_t assigned_count = 2;
+
+    while (assigned_count < n) {
+        const std::size_t remaining = n - assigned_count;
+
+        if (left_entries.size() + remaining == min_entries) {
+            for (std::size_t idx = 0; idx < n; ++idx) {
+                if (!assigned[idx]) {
+                    left_entries.push_back(entries[idx]);
+                    left_mbr = left_mbr.expandedToInclude(entries[idx].mbr);
+                    assigned[idx] = true;
+                    ++assigned_count;
+                }
+            }
+            break;
+        }
+
+        if (right_entries.size() + remaining == min_entries) {
+            for (std::size_t idx = 0; idx < n; ++idx) {
+                if (!assigned[idx]) {
+                    right_entries.push_back(entries[idx]);
+                    right_mbr = right_mbr.expandedToInclude(entries[idx].mbr);
+                    assigned[idx] = true;
+                    ++assigned_count;
+                }
+            }
+            break;
+        }
+
+        std::size_t chosen = n;
+        double max_delta = -1.0;
+        double chosen_left_cost = 0.0;
+        double chosen_right_cost = 0.0;
+
+        for (std::size_t idx = 0; idx < n; ++idx) {
+            if (assigned[idx]) {
+                continue;
+            }
+
+            const double left_cost = enlargementScore(left_mbr, entries[idx].mbr);
+            const double right_cost = enlargementScore(right_mbr, entries[idx].mbr);
+            const double delta = std::abs(left_cost - right_cost);
+            if (delta > max_delta) {
+                max_delta = delta;
+                chosen = idx;
+                chosen_left_cost = left_cost;
+                chosen_right_cost = right_cost;
+            }
+        }
+
+        if (chosen == n) {
+            throw std::runtime_error("Quadratic split failed to choose next entry");
+        }
+
+        bool assign_left = false;
+        if (chosen_left_cost < chosen_right_cost) {
+            assign_left = true;
+        } else if (chosen_right_cost < chosen_left_cost) {
+            assign_left = false;
+        } else {
+            const double left_margin = boxMargin(left_mbr);
+            const double right_margin = boxMargin(right_mbr);
+            if (left_margin < right_margin) {
+                assign_left = true;
+            } else if (right_margin < left_margin) {
+                assign_left = false;
+            } else {
+                assign_left = left_entries.size() <= right_entries.size();
+            }
+        }
+
+        if (assign_left) {
+            left_entries.push_back(entries[chosen]);
+            left_mbr = left_mbr.expandedToInclude(entries[chosen].mbr);
+        } else {
+            right_entries.push_back(entries[chosen]);
+            right_mbr = right_mbr.expandedToInclude(entries[chosen].mbr);
+        }
+
+        assigned[chosen] = true;
+        ++assigned_count;
+    }
 
     if (left_entries.empty() || right_entries.empty()) {
         throw std::runtime_error("R-tree split produced an empty partition");
@@ -408,32 +528,6 @@ std::size_t RTreeIndex::chooseSubtree(const std::vector<RTreeEntry>& entries, co
     }
 
     return best_index;
-}
-
-std::size_t RTreeIndex::chooseSplitAxis(const std::vector<RTreeEntry>& entries) const {
-    if (entries.empty()) {
-        throw std::runtime_error("Cannot choose split axis for empty entries");
-    }
-
-    std::size_t best_axis = 0;
-    double best_span = -1.0;
-
-    for (std::size_t axis = 0; axis < dimensions_; ++axis) {
-        double min_center = boxCenter(entries[0].mbr, axis);
-        double max_center = min_center;
-        for (std::size_t index = 1; index < entries.size(); ++index) {
-            const double center = boxCenter(entries[index].mbr, axis);
-            min_center = std::min(min_center, center);
-            max_center = std::max(max_center, center);
-        }
-        const double span = max_center - min_center;
-        if (span > best_span) {
-            best_span = span;
-            best_axis = axis;
-        }
-    }
-
-    return best_axis;
 }
 
 void RTreeIndex::updateChildParentLinks(const RTreeNodePage& node) const {

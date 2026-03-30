@@ -50,7 +50,6 @@ private:
     SplitResult splitAndPersistNode(const RTreeNodePage& node, const std::vector<RTreeEntry>& entries);
 
     std::size_t chooseSubtree(const std::vector<RTreeEntry>& entries, const BoundingBox& target) const;
-    std::size_t chooseSplitAxis(const std::vector<RTreeEntry>& entries) const;
     void updateChildParentLinks(const RTreeNodePage& node) const;
     void validateEntryDimensions(const BoundingBox& mbr) const;
 };
