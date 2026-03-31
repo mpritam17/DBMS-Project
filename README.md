@@ -10,6 +10,8 @@ Implementation of a page-backed R-Tree for high-dimensional image indexing.
 - Initial R-Tree node page serialization and bounding-box primitives
 - Recursive R-Tree insertion with node splitting and root growth
 - Week 1 documentation for storage layout and vector export format
+- Week 4 R-tree query layer and full integration tests
+- Week 5 MERN integration scaling up to 60,000 images loaded at 64D with fixed ID map pipeline
 
 ## Repository Layout
 - `cpp/`: C++ source, headers, and tests
@@ -19,6 +21,8 @@ Implementation of a page-backed R-Tree for high-dimensional image indexing.
 ## Documentation
 - `docs/WEEK1_START.md`: Week 1 goals and quickstart
 - `docs/WEEK1_IMPLEMENTATION_DETAILS.md`: detailed record of completed implementation and validation
+- `docs/WEEK4_QUERY_LAYER.md`: week 4 R-tree query layer
+- `docs/WEEK5_IMAGE_SEARCH_AND_MERN.md`: Week 5 E2E image search API scaled to 60k high-accuracy (64D) images using MERN
 
 ## Python Setup
 Create and use the workspace virtual environment:
@@ -83,7 +87,7 @@ cmake --build build
 
 It reads vectors from the slotted-page embedding store, builds an R-tree query layer through the buffer pool, executes KNN, and compares R-tree latency/recall against brute-force search.
 
-## Week 4 MERN Integration
+## End-to-End Image Search API (MERN)
 
 A MERN scaffold is available in `mern/`.
 
@@ -116,4 +120,13 @@ Fallback lightweight Python API remains available:
 
 ```bash
 python scripts/week4_query_api.py --db sample.db --host 127.0.0.1 --port 8080
+```
+
+## Generate New 64D Dataset
+To regenerate the 60,000 CIFAR-10 embeddings mapping to 64D features over ResNet-18:
+```bash
+source .venv/bin/activate
+# This safely parses and sets 60,000 photos, bypassing index sorting faults previously identified.
+python scripts/populate_database.py --source cifar10 --count 60000 --pca-dims 64
+./build/bulk_load data/sample_vecs.bin sample.db
 ```
