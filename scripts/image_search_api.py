@@ -257,11 +257,11 @@ def main():
     parser.add_argument("--pca-model", default=None, help="Path to PCA model .npz file")
     parser.add_argument("--image-dir", default=None, help="Directory containing source images")
     parser.add_argument("--embedding-dims", type=int, default=128,
-                        help="Embedding dimensions before PCA")
+                        help="Embedding dimensions before PCA (default: 128)")
     args = parser.parse_args()
     
     # Setup device
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    device = "cpu"
     print(f"Using device: {device}")
     _state["device"] = device
     
@@ -304,6 +304,25 @@ def main():
     _state["vectors"] = vectors
     _state["dims"] = dims
     print(f"  Loaded {len(ids)} vectors with {dims} dimensions")
+
+    # Validate dimensional alignment at startup to avoid runtime 500s.
+    if _state["pca"] is None:
+        if args.embedding_dims != dims:
+            raise SystemExit(
+                f"Dimension mismatch at startup: query pipeline outputs {args.embedding_dims}D "
+                f"but index has {dims}D. Set --embedding-dims {dims} or provide --pca-model."
+            )
+    else:
+        pca_input_dims = int(_state["pca"]["components"].shape[1])
+        pca_output_dims = int(_state["pca"]["components"].shape[0])
+        if args.embedding_dims != pca_input_dims:
+            raise SystemExit(
+                f"PCA model expects {pca_input_dims}D input, but --embedding-dims is {args.embedding_dims}."
+            )
+        if pca_output_dims != dims:
+            raise SystemExit(
+                f"PCA model outputs {pca_output_dims}D but index vectors are {dims}D."
+            )
     
     # Setup image directory
     if args.image_dir:

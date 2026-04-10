@@ -24,7 +24,11 @@ class ImageFolderNoLabel(Dataset):
     def __getitem__(self, idx):
         path = self.paths[idx]
         image = Image.open(path).convert("RGB")
-        return self.transform(image), idx
+        try:
+            img_id = int(path.stem.split("_")[-1])
+        except ValueError:
+            img_id = idx
+        return self.transform(image), img_id
 
 
 def build_loader(dataset_name: str, root: Path, batch_size: int, limit: int | None):
@@ -49,7 +53,7 @@ def build_loader(dataset_name: str, root: Path, batch_size: int, limit: int | No
     return DataLoader(ds, batch_size=batch_size, shuffle=False, num_workers=0)
 
 
-def write_vectors(path: Path, vectors: np.ndarray):
+def write_vectors(path: Path, vectors: np.ndarray, ids: np.ndarray = None):
     n, d = vectors.shape
     path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -61,7 +65,8 @@ def write_vectors(path: Path, vectors: np.ndarray):
         f.write(struct.pack("<I", 0))
 
         for i in range(n):
-            f.write(struct.pack("<Q", i))
+            vec_id = int(ids[i]) if ids is not None else i
+            f.write(struct.pack("<Q", vec_id))
             f.write(vectors[i].astype(np.float32).tobytes())
 
 
@@ -72,15 +77,15 @@ def main():
     parser.add_argument("--output", default="data/cifar10_vecs.bin")
     parser.add_argument("--dims", type=int, default=128,
                         help="Intermediate embedding dimensions from ResNet projection")
-    parser.add_argument("--pca-dims", type=int, default=None,
-                        help="Final dimensions after PCA reduction (e.g., 10-12). If not set, PCA is skipped.")
+    parser.add_argument("--pca-dims", type=int, default=64,
+                        help="Final dimensions after PCA reduction (e.g., 64). If not set, PCA is skipped.")
     parser.add_argument("--pca-model-path", type=str, default=None,
                         help="Path to save/load fitted PCA model (.npy file)")
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--limit", type=int, default=None)
     args = parser.parse_args()
 
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    device = "cpu"
     print(f"Using device: {device}")
 
     loader = build_loader(args.dataset, Path(args.data_root), args.batch_size, args.limit)
@@ -94,14 +99,17 @@ def main():
     torch.nn.init.orthogonal_(projector.weight)
 
     out = []
+    out_ids = []
     with torch.no_grad():
-        for images, _ in loader:
+        for images, img_ids in loader:
             features = backbone(images.to(device))
             vectors = projector(features)
             vectors = torch.nn.functional.normalize(vectors, p=2, dim=1)
             out.append(vectors.cpu().numpy())
+            out_ids.extend(img_ids.numpy() if hasattr(img_ids, "numpy") else img_ids)
 
     all_vecs = np.vstack(out).astype(np.float32)
+    all_ids = np.array(out_ids, dtype=np.uint64)
     print(f"Extracted {all_vecs.shape[0]} vectors with dims={all_vecs.shape[1]}")
 
     # Apply PCA if requested
@@ -112,7 +120,12 @@ def main():
             print(f"Applying PCA: {all_vecs.shape[1]}D -> {args.pca_dims}D")
             
             pca = PCA(n_components=args.pca_dims)
-            all_vecs = pca.fit_transform(all_vecs).astype(np.float32)
+            pca_train_size = min(10000, len(all_vecs))
+            print(f"Training PCA on {pca_train_size} randomly sampled samples")
+            np.random.seed(42)
+            indices = np.random.choice(len(all_vecs), pca_train_size, replace=False)
+            pca.fit(all_vecs[indices])
+            all_vecs = pca.transform(all_vecs).astype(np.float32)
             
             # Re-normalize after PCA
             norms = np.linalg.norm(all_vecs, axis=1, keepdims=True)
@@ -134,7 +147,7 @@ def main():
                 )
                 print(f"Saved PCA model to {pca_path}")
 
-    write_vectors(Path(args.output), all_vecs)
+    write_vectors(Path(args.output), all_vecs, all_ids)
 
     print(f"Wrote {all_vecs.shape[0]} vectors with dims={all_vecs.shape[1]} to {args.output}")
 

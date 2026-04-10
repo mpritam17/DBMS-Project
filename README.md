@@ -83,9 +83,50 @@ cmake -S . -B build
 cmake --build build
 ./build/week4_query_benchmark sample.db 0 10
 ./build/week4_query_benchmark sample.db all 10 week4_metrics.csv
+./build/week4_query_benchmark sample.db all:200 10 week4_metrics_sampled.csv
 ```
 
-It reads vectors from the slotted-page embedding store, builds an R-tree query layer through the buffer pool, executes KNN, and compares R-tree latency/recall against brute-force search.
+It reads vectors from the slotted-page embedding store, builds an R-tree query layer through the buffer pool, executes KNN, and compares R-tree latency/recall against brute-force search. The selector `all:N` runs only the first `N` query vectors, which is useful for fast benchmark iterations on larger datasets.
+
+## SQLite Vs R-Tree Comparison
+
+To compare baseline SQLite scan latency against your custom R-tree access path:
+
+```bash
+python scripts/benchmark_sqlite_vs_rtree.py \
+  --db sample.db \
+  --benchmark-bin ./build/week4_query_benchmark \
+  --query-selector all:200 \
+  --k 10 \
+  --output-csv sqlite_vs_rtree_metrics.csv
+```
+
+This command:
+
+- runs `week4_query_benchmark` for R-tree and brute-force timings,
+- loads the same vectors into a temporary SQLite table,
+- times SQLite KNN scans using SQL `ORDER BY` distance,
+- writes merged per-query metrics to `sqlite_vs_rtree_metrics.csv`.
+
+## Cleanup Generated Files
+
+Preview cleanup targets:
+
+```bash
+bash scripts/cleanup_generated_files.sh --dry-run
+```
+
+Apply cleanup:
+
+```bash
+bash scripts/cleanup_generated_files.sh --apply
+```
+
+Optional: also delete frontend/backend `node_modules` and frontend `dist`:
+
+```bash
+bash scripts/cleanup_generated_files.sh --apply --include-node-modules
+```
 
 ## End-to-End Image Search API (MERN)
 

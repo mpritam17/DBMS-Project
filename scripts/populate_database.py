@@ -136,7 +136,7 @@ def extract_embeddings(image_paths: list[Path], dims: int = 128, pca_dims: int |
     from torchvision import models, transforms
     from sklearn.decomposition import PCA
     
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    device = "cpu"
     print(f"Extracting embeddings on {device}...")
     
     # Load model
@@ -202,7 +202,12 @@ def extract_embeddings(image_paths: list[Path], dims: int = 128, pca_dims: int |
     if pca_dims and pca_dims < vectors.shape[1]:
         print(f"Applying PCA: {vectors.shape[1]}D -> {pca_dims}D")
         pca = PCA(n_components=pca_dims)
-        vectors = pca.fit_transform(vectors).astype(np.float32)
+        pca_train_size = min(10000, len(vectors))
+        print(f"Training PCA on {pca_train_size} randomly sampled samples")
+        np.random.seed(42)
+        indices = np.random.choice(len(vectors), pca_train_size, replace=False)
+        pca.fit(vectors[indices])
+        vectors = pca.transform(vectors).astype(np.float32)
         
         # Re-normalize
         norms = np.linalg.norm(vectors, axis=1, keepdims=True)
@@ -250,7 +255,7 @@ def main():
                         help="Directory to save images")
     parser.add_argument("--vec-output", default="data/sample_vecs.bin",
                         help="Output VEC1 file path")
-    parser.add_argument("--pca-dims", type=int, default=12,
+    parser.add_argument("--pca-dims", type=int, default=64,
                         help="PCA dimensions (default: 12, set to 0 to disable)")
     parser.add_argument("--pca-output", default="data/pca_model.npz",
                         help="Output PCA model file")

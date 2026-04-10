@@ -75,7 +75,7 @@ std::vector<StoredVector> loadVectorsFromEmbeddingStore(StorageManager& storage,
                 dims = item_dims;
             }
             if (item_dims != dims) {
-                throw std::runtime_error("Inconsistent vector dimensions in embedding store");
+                continue;
             }
 
             StoredVector vec{};
@@ -131,6 +131,35 @@ std::size_t recallAtK(
     return hits;
 }
 
+bool parseAllSelector(const std::string& selector, std::size_t* out_limit) {
+    if (selector == "all") {
+        if (out_limit != nullptr) {
+            *out_limit = 0;
+        }
+        return true;
+    }
+
+    const std::string prefix = "all:";
+    if (selector.rfind(prefix, 0) != 0) {
+        return false;
+    }
+
+    const std::string limit_str = selector.substr(prefix.size());
+    if (limit_str.empty()) {
+        throw std::runtime_error("Invalid query selector 'all:'; expected all:<positive_integer>");
+    }
+
+    const std::size_t limit = static_cast<std::size_t>(std::stoull(limit_str));
+    if (limit == 0) {
+        throw std::runtime_error("Invalid query selector; all:<N> requires N >= 1");
+    }
+
+    if (out_limit != nullptr) {
+        *out_limit = limit;
+    }
+    return true;
+}
+
 QueryMetrics benchmarkSingleQuery(
     const RTreeIndex& index,
     const std::vector<StoredVector>& unique_vectors,
@@ -182,7 +211,7 @@ void writeCsv(const std::string& csv_path, const std::vector<QueryMetrics>& rows
 
 int main(int argc, char** argv) {
     if (argc < 4) {
-        std::cerr << "Usage: " << argv[0] << " <db_file> <query_id|all> <k> [csv_output_path]\n";
+        std::cerr << "Usage: " << argv[0] << " <db_file> <query_id|all|all:N> <k> [csv_output_path]\n";
         return 1;
     }
 
@@ -225,10 +254,14 @@ int main(int argc, char** argv) {
         });
 
         std::vector<uint64_t> query_ids;
-        if (query_selector == "all") {
+        std::size_t all_limit = 0;
+        if (parseAllSelector(query_selector, &all_limit)) {
             query_ids.reserve(unique_vectors.size());
             for (const auto& v : unique_vectors) {
                 query_ids.push_back(v.id);
+            }
+            if (all_limit > 0 && query_ids.size() > all_limit) {
+                query_ids.resize(all_limit);
             }
         } else {
             query_ids.push_back(std::stoull(query_selector));

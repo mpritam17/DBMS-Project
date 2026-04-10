@@ -18,7 +18,7 @@ The tool reads vectors from the on-disk embedding store (`sample.db`), builds an
 Usage:
 
 ```bash
-./build/week4_query_benchmark <db_file> <query_id|all> <k> [csv_output_path]
+./build/week4_query_benchmark <db_file> <query_id|all|all:N> <k> [csv_output_path]
 ```
 
 Example:
@@ -26,12 +26,13 @@ Example:
 ```bash
 ./build/week4_query_benchmark sample.db 0 10
 ./build/week4_query_benchmark sample.db all 10 benchmark_week4.csv
+./build/week4_query_benchmark sample.db all:200 10 benchmark_week4_sampled.csv
 ```
 
 Arguments:
 
 - `db_file`: slotted-page database produced by `bulk_load`
-- `query_id|all`: specific vector id or `all` to benchmark all unique vectors
+- `query_id|all|all:N`: specific vector id, all query vectors, or first `N` vectors for faster sampled runs
 - `k`: number of nearest neighbours
 - `csv_output_path` (optional): writes per-query rows for report plotting
 
@@ -46,6 +47,21 @@ The tool prints:
 - R-tree metadata page id
 
 In `all` mode, the tool reports average latency/recall across all query vectors and can export per-query rows to CSV.
+
+## SQLite Baseline Comparison
+
+To compare normal SQLite scans against the custom R-tree path, use:
+
+```bash
+python scripts/benchmark_sqlite_vs_rtree.py \
+  --db sample.db \
+  --benchmark-bin ./build/week4_query_benchmark \
+  --query-selector all:200 \
+  --k 10 \
+  --output-csv sqlite_vs_rtree_metrics.csv
+```
+
+The script runs `week4_query_benchmark`, builds a temporary SQLite table with the same vectors, measures SQLite KNN scan latency, and outputs merged per-query comparison rows in a CSV.
 
 ## Notes
 
