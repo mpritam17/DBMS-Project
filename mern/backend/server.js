@@ -75,7 +75,7 @@ function parseBenchmarkOutput(output) {
     }
   }
 
-  return { metrics, results, raw: output };
+  return { metrics, results, neighbors, raw: output };
 }
 
 async function runBenchmark({ dbPath, querySelector, k }) {
@@ -249,7 +249,7 @@ app.get("/api/query-logs", async (_req, res) => {
   }
 });
 
-// Image search endpoint - proxies to Python image search API
+// Image search endpoint - strictly runs the actual C++ R-tree benchmark
 app.post("/api/image-search", upload.single("image"), async (req, res) => {
   try {
     if (!req.file) {
@@ -261,72 +261,85 @@ app.post("/api/image-search", upload.single("image"), async (req, res) => {
       return res.status(400).json({ ok: false, error: "k must be >= 1" });
     }
 
-    // Forward the request to the Python image search API using form-data package
+    const { dbPath } = req.body;
+    const resolvedDbPath = resolveDbPath(dbPath);
+
+    // Forward the request to the Python extract API
     const formData = new FormData();
     formData.append("image", req.file.buffer, {
       filename: req.file.originalname || "image.jpg",
       contentType: req.file.mimetype || "image/jpeg",
       knownLength: req.file.buffer.length,
     });
-    formData.append("k", String(k));
 
-    let response;
+    let extractResponse;
     try {
-      // Use form-data's submit method for proper multipart encoding
-      response = await new Promise((resolve, reject) => {
-        formData.submit(`${IMAGE_SEARCH_API}/search`, (err, res) => {
+      extractResponse = await new Promise((resolve, reject) => {
+        formData.submit(`${IMAGE_SEARCH_API}/extract`, (err, response) => {
           if (err) reject(err);
-          else resolve(res);
+          else resolve(response);
         });
       });
     } catch (fetchError) {
       console.error("Fetch error:", fetchError);
-      if (fetchError.code === "ECONNREFUSED") {
-        return res.status(503).json({
-          ok: false,
-          error: "Image search service unavailable. Start the Python API with: python scripts/image_search_api.py --vec-file data/sample_vecs.bin --image-dir data/sample_images --pca-model data/pca_model.npz",
-        });
-      }
-      throw fetchError;
-    }
-
-    // Read response body
-    let responseText = "";
-    for await (const chunk of response) {
-      responseText += chunk.toString();
-    }
-
-    if (response.statusCode !== 200) {
-      let errorData = {};
-      try {
-        errorData = JSON.parse(responseText);
-      } catch {
-        errorData = { error: responseText || `HTTP ${response.statusCode}` };
-      }
-      console.error("Image search API error:", response.statusCode, errorData);
-      return res.status(response.statusCode).json({
+      return res.status(503).json({
         ok: false,
-        error: errorData.error || `Image search API returned ${response.statusCode}`,
+        error: "Image search service offline. Start the Python API first.",
       });
     }
 
-    let data;
+    let extractDataRaw = "";
+    for await (const chunk of extractResponse) {
+      extractDataRaw += chunk;
+    }
+    let extractData;
     try {
-      data = JSON.parse(responseText);
+      extractData = JSON.parse(extractDataRaw);
     } catch {
-      console.error("Failed to parse response:", responseText);
-      return res.status(500).json({ ok: false, error: "Invalid response from image search API" });
+      return res.status(500).json({ ok: false, error: "Invalid vector response from python" });
     }
     
-    // Rewrite image URLs to go through this server
-    if (data.results) {
-      data.results = data.results.map((r) => ({
-        ...r,
-        imageUrl: `/api/images/${r.id}`,
-      }));
+    if (!extractData.ok) {
+      return res.status(500).json({ ok: false, error: extractData.error || "Failed to extract vector" });
     }
 
-    return res.json(data);
+    let dbDims = 128;
+    try {
+      const dummyRun = await execFileAsync(BENCHMARK_BIN, [resolvedDbPath, "all:1", "1"]);
+      const match = dummyRun.stdout.match(/dims:\s+(\d+)/);
+      if (match) dbDims = Number(match[1]);
+    } catch (e) {}
+
+    let chosenVec = extractData.vector;
+    if (extractData.pca_dims && extractData.pca_dims === dbDims) {
+      chosenVec = extractData.vector_pca;
+    }
+
+    const vectorStr = chosenVec.join(",");
+    const querySelector = `vec:${vectorStr}`;
+
+    const startMs = Date.now();
+    const parsed = await runBenchmark({ dbPath: resolvedDbPath, querySelector, k });
+    const endMs = Date.now();
+
+    return res.json({
+      ok: true,
+      k,
+      results: parsed.neighbors.map((n) => ({
+        id: n.id,
+        distance: n.distance,
+        imageUrl: `/api/images/${n.id}`,
+      })),
+      timing: {
+        imageLoad_ms: 0,
+        embedding_ms: 0,
+        pca_ms: 0,
+        knnSearch_ms: (parsed.metrics.rtreeUs / 1000.0) || (endMs - startMs),
+        total_ms: endMs - startMs,
+      },
+      dims: dbDims,
+      pcaEnabled: extractData.pca_dims === dbDims,
+    });
   } catch (error) {
     console.error("Image search error:", error);
     return res.status(500).json({ ok: false, error: error.message || "Internal server error" });

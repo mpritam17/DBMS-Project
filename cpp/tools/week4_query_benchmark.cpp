@@ -181,7 +181,8 @@ QueryMetrics benchmarkSingleQueryRaw(
     const std::vector<StoredVector>& unique_vectors,
     const std::vector<float>& query,
     uint64_t query_id_label,
-    std::size_t k) {
+    std::size_t k,
+    std::vector<std::pair<float, uint64_t>>* out_results = nullptr) {
     const auto rtree_start = std::chrono::high_resolution_clock::now();
     const auto rtree_results = index.searchKNN(query, k);
     const auto rtree_end = std::chrono::high_resolution_clock::now();
@@ -196,6 +197,10 @@ QueryMetrics benchmarkSingleQueryRaw(
     const std::size_t hits = recallAtK(rtree_results, brute_results);
     const std::size_t denom = std::min(rtree_results.size(), brute_results.size());
     const double recall = denom == 0 ? 0.0 : static_cast<double>(hits) / static_cast<double>(denom);
+
+    if (out_results) {
+        *out_results = rtree_results;
+    }
 
     return {query_id_label, rtree_us, brute_us, hits, denom, recall};
 }
@@ -302,9 +307,10 @@ int main(int argc, char** argv) {
         StorageManager::disk_writes = 0;
 
         // Build the R-tree in a separate temp DB to avoid mixing index pages
-        // with embedding slotted pages in the source file.
+        // with embedding slotted pages in the source file. Re-use if exists!
         const std::string index_db_file = db_file + ".rtree_tmp.db";
-        std::filesystem::remove(index_db_file);
+        bool build_index = !std::filesystem::exists(index_db_file);
+        
         StorageManager index_storage;
         index_storage.open(index_db_file);
 
@@ -312,16 +318,23 @@ int main(int argc, char** argv) {
         BufferPoolManager bpm(2048, &index_storage);
         RTreeIndex index(&bpm, dims);
 
-        for (const auto& v : unique_vectors) {
-            index.insertPoint(v.values, v.id);
+        if (build_index) {
+            std::cout << "Building R-Tree index... (this may take a moment)\n";
+            for (const auto& v : unique_vectors) {
+                index.insertPoint(v.values, v.id);
+            }
+            bpm.flushAllPages();
+            std::cout << "R-Tree index built.\n";
+        } else {
+            std::cout << "Loaded existing R-Tree index from " << index_db_file << "\n";
         }
-        bpm.flushAllPages();
 
+        std::vector<std::pair<float, uint64_t>> out_results;
         std::vector<QueryMetrics> all_metrics;
         all_metrics.reserve(query_ids.size());
 
         if (is_custom_vec) {
-            all_metrics.push_back(benchmarkSingleQueryRaw(index, unique_vectors, parsed_vec_query, 999999, k));
+            all_metrics.push_back(benchmarkSingleQueryRaw(index, unique_vectors, parsed_vec_query, 999999, k, &out_results));
         } else {
             for (uint64_t qid : query_ids) {
                 all_metrics.push_back(benchmarkSingleQuery(index, unique_vectors, by_id, qid, k));
@@ -376,8 +389,16 @@ int main(int argc, char** argv) {
             std::cout << "CSV written: " << csv_path << "\n";
         }
 
-        // Index data is temporary for benchmarking only.
-        std::filesystem::remove(index_db_file);
+        if (is_custom_vec) {
+            std::cout << "\nCustom Vector Neighbors:\n";
+            for (const auto& pair : out_results) {
+                std::cout << "{ \"id\": " << pair.second << ", \"distance\": " << pair.first << " }\n";
+            }
+        }
+
+        // We will no longer remove the R-tree index. It takes too long to build 
+        // every single time. It remains for rapid follow-up queries.
+        // std::filesystem::remove(index_db_file);
 
         // StorageManager closes in its destructor after BPM/index teardown.
     } catch (const std::exception& ex) {
