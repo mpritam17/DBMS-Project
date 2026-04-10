@@ -266,6 +266,11 @@ int main(int argc, char** argv) {
             throw std::runtime_error("No vectors found in slotted-page embedding store");
         }
 
+        if (query_selector == "dim") {
+            std::cout << "dims: " << dims << "\n";
+            return 0;
+        }
+
         std::unordered_map<uint64_t, std::vector<float>> by_id;
         by_id.reserve(vectors.size());
         for (const auto& v : vectors) {
@@ -316,18 +321,21 @@ int main(int argc, char** argv) {
 
         // Increased buffer pool size for building the index over 60k vectors smoothly
         BufferPoolManager bpm(2048, &index_storage);
-        RTreeIndex index(&bpm, dims);
-
+        
+        RTreeIndex* index_ptr = nullptr;
         if (build_index) {
+            index_ptr = new RTreeIndex(&bpm, dims);
             std::cout << "Building R-Tree index... (this may take a moment)\n";
             for (const auto& v : unique_vectors) {
-                index.insertPoint(v.values, v.id);
+                index_ptr->insertPoint(v.values, v.id);
             }
             bpm.flushAllPages();
             std::cout << "R-Tree index built.\n";
         } else {
+            index_ptr = new RTreeIndex(&bpm, static_cast<uint32_t>(0));
             std::cout << "Loaded existing R-Tree index from " << index_db_file << "\n";
         }
+        RTreeIndex& index = *index_ptr;
 
         std::vector<std::pair<float, uint64_t>> out_results;
         std::vector<QueryMetrics> all_metrics;
@@ -395,6 +403,8 @@ int main(int argc, char** argv) {
                 std::cout << "{ \"id\": " << pair.second << ", \"distance\": " << pair.first << " }\n";
             }
         }
+
+        delete index_ptr;
 
         // We will no longer remove the R-tree index. It takes too long to build 
         // every single time. It remains for rapid follow-up queries.

@@ -45,6 +45,7 @@ const QueryLog = mongoose.model("QueryLog", queryLogSchema);
 function parseBenchmarkOutput(output) {
   const metrics = {};
   const results = [];
+  let neighbors = [];
 
   const pull = (key, regex, cast = Number) => {
     const match = output.match(regex);
@@ -73,6 +74,14 @@ function parseBenchmarkOutput(output) {
         recall: Number(row[4]),
       });
     }
+
+    const neighborMatch = line.trim().match(/^\{\s*"id":\s*(\d+),\s*"distance":\s*([^}]+)\s*\}$/);
+    if (neighborMatch) {
+      neighbors.push({
+        id: Number(neighborMatch[1]),
+        distance: Number(neighborMatch[2].trim())
+      });
+    }
   }
 
   return { metrics, results, neighbors, raw: output };
@@ -80,7 +89,7 @@ function parseBenchmarkOutput(output) {
 
 async function runBenchmark({ dbPath, querySelector, k }) {
   const args = [dbPath, String(querySelector), String(k)];
-  const timeoutMs = 300000; // Increased timeout for large databases
+  const timeoutMs = 600000; // 10 minutes timeout for large databases
   const { stdout, stderr } = await execFileAsync(BENCHMARK_BIN, args, { timeout: timeoutMs });
   if (stderr && stderr.trim().length > 0) {
     console.error("Benchmark stderr:", stderr);
@@ -198,7 +207,7 @@ app.post("/api/query-image", upload.single("image"), async (req, res) => {
     // Determine DB dimensions using a dummy query
     let dbDims = 128;
     try {
-      const dummyRun = await execFileAsync(BENCHMARK_BIN, [dbPath, "all:1", "1"]);
+      const dummyRun = await execFileAsync(BENCHMARK_BIN, [dbPath, "dim", "1"]);
       const match = dummyRun.stdout.match(/dims:\s+(\d+)/);
       if (match) dbDims = Number(match[1]);
     } catch (e) {
@@ -305,7 +314,7 @@ app.post("/api/image-search", upload.single("image"), async (req, res) => {
 
     let dbDims = 128;
     try {
-      const dummyRun = await execFileAsync(BENCHMARK_BIN, [resolvedDbPath, "all:1", "1"]);
+      const dummyRun = await execFileAsync(BENCHMARK_BIN, [resolvedDbPath, "dim", "1"]);
       const match = dummyRun.stdout.match(/dims:\s+(\d+)/);
       if (match) dbDims = Number(match[1]);
     } catch (e) {}
@@ -322,6 +331,10 @@ app.post("/api/image-search", upload.single("image"), async (req, res) => {
     const parsed = await runBenchmark({ dbPath: resolvedDbPath, querySelector, k });
     const endMs = Date.now();
 
+    const knnSearch_ms = parsed.metrics.rtreeUs ? (parsed.metrics.rtreeUs / 1000.0) : (endMs - startMs);
+    const extractTiming = extractData.timing || {};
+    const total_ms = (extractTiming.total_ms || 0) + knnSearch_ms;
+
     return res.json({
       ok: true,
       k,
@@ -331,11 +344,11 @@ app.post("/api/image-search", upload.single("image"), async (req, res) => {
         imageUrl: `/api/images/${n.id}`,
       })),
       timing: {
-        imageLoad_ms: 0,
-        embedding_ms: 0,
-        pca_ms: 0,
-        knnSearch_ms: (parsed.metrics.rtreeUs / 1000.0) || (endMs - startMs),
-        total_ms: endMs - startMs,
+        imageLoad_ms: extractTiming.imageLoad_ms || 0,
+        embedding_ms: extractTiming.embedding_ms || 0,
+        pca_ms: extractTiming.pca_ms || 0,
+        knnSearch_ms: knnSearch_ms,
+        total_ms: total_ms,
       },
       dims: dbDims,
       pcaEnabled: extractData.pca_dims === dbDims,
