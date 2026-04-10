@@ -80,7 +80,7 @@ function parseBenchmarkOutput(output) {
 
 async function runBenchmark({ dbPath, querySelector, k }) {
   const args = [dbPath, String(querySelector), String(k)];
-  const timeoutMs = String(querySelector).toLowerCase() === "all" ? 30000 : 20000;
+  const timeoutMs = 300000; // Increased timeout for large databases
   const { stdout, stderr } = await execFileAsync(BENCHMARK_BIN, args, { timeout: timeoutMs });
   if (stderr && stderr.trim().length > 0) {
     console.error("Benchmark stderr:", stderr);

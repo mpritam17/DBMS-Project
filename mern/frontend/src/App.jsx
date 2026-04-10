@@ -226,7 +226,7 @@ function QueryBenchmarkTab() {
 
     try {
       const controller = new AbortController();
-      timeoutId = setTimeout(() => controller.abort(), 25000);
+      timeoutId = setTimeout(() => controller.abort(), 300000); // 5 minutes
 
       let response;
       if (imageFile) {

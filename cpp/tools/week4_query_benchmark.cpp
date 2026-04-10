@@ -308,7 +308,8 @@ int main(int argc, char** argv) {
         StorageManager index_storage;
         index_storage.open(index_db_file);
 
-        BufferPoolManager bpm(64, &index_storage);
+        // Increased buffer pool size for building the index over 60k vectors smoothly
+        BufferPoolManager bpm(2048, &index_storage);
         RTreeIndex index(&bpm, dims);
 
         for (const auto& v : unique_vectors) {
