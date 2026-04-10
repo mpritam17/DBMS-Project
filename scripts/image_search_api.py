@@ -148,6 +148,34 @@ def get_image_path(image_id: int) -> Path | None:
     return None
 
 
+@app.route("/extract", methods=["POST"])
+def extract():
+    """Extract an embedding from an uploaded image."""
+    try:
+        if "image" not in request.files:
+            return jsonify({"ok": False, "error": "No image file provided"}), 400
+        
+        image_file = request.files["image"]
+        image = Image.open(image_file.stream).convert("RGB")
+        
+        raw_vector = extract_embedding(image)
+        result_map = {
+            "vector": raw_vector.flatten().tolist(),  # default (128D)
+            "dims": int(raw_vector.shape[1])
+        }
+
+        if _state["pca"] is not None:
+            pca_vector = apply_pca(raw_vector, _state["pca"])
+            result_map["vector_pca"] = pca_vector.flatten().tolist()
+            result_map["pca_dims"] = int(pca_vector.shape[1])
+            
+        # Return as a simple 1D array list
+        return jsonify({"ok": True, **result_map})
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({"ok": False, "error": str(e)}), 500
+
 @app.route("/health", methods=["GET"])
 def health():
     return jsonify({

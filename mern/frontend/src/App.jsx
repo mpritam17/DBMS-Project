@@ -211,6 +211,7 @@ function ImageSearchTab() {
 
 function QueryBenchmarkTab() {
   const [queryId, setQueryId] = useState("0");
+  const [imageFile, setImageFile] = useState(null);
   const [k, setK] = useState(10);
   const [dbPath, setDbPath] = useState("");
   const [loading, setLoading] = useState(false);
@@ -224,24 +225,40 @@ function QueryBenchmarkTab() {
     let timeoutId;
 
     try {
-      const normalizedQuery = queryId.trim().toLowerCase();
-      const requestBody = {
-        queryId: normalizedQuery === "all" ? "all" : Number(queryId),
-        k: Number(k),
-      };
-      if (dbPath.trim().length > 0) {
-        requestBody.dbPath = dbPath.trim();
-      }
-
       const controller = new AbortController();
       timeoutId = setTimeout(() => controller.abort(), 25000);
 
-      const response = await fetch("/api/query", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(requestBody),
-        signal: controller.signal,
-      });
+      let response;
+      if (imageFile) {
+        const formData = new FormData();
+        formData.append("image", imageFile);
+        formData.append("k", String(k));
+        if (dbPath.trim().length > 0) {
+          formData.append("dbPath", dbPath.trim());
+        }
+        
+        response = await fetch("/api/query-image", {
+          method: "POST",
+          body: formData,
+          signal: controller.signal,
+        });
+      } else {
+        const normalizedQuery = queryId.trim().toLowerCase();
+        const requestBody = {
+          queryId: normalizedQuery === "all" ? "all" : Number(queryId),
+          k: Number(k),
+        };
+        if (dbPath.trim().length > 0) {
+          requestBody.dbPath = dbPath.trim();
+        }
+
+        response = await fetch("/api/query", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(requestBody),
+          signal: controller.signal,
+        });
+      }
       clearTimeout(timeoutId);
 
       const rawText = await response.text();
@@ -284,8 +301,13 @@ function QueryBenchmarkTab() {
     <>
       <form className="card" onSubmit={submit}>
         <label>
+          Custom Image Query (overrides Query ID)
+          <input type="file" accept="image/*" onChange={(e) => setImageFile(e.target.files[0])} />
+        </label>
+
+        <label>
           Query ID (number or <code>all</code>)
-          <input value={queryId} onChange={(e) => setQueryId(e.target.value)} />
+          <input value={queryId} disabled={!!imageFile} onChange={(e) => setQueryId(e.target.value)} />
         </label>
 
         <label>

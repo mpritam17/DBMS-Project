@@ -150,6 +150,93 @@ app.post("/api/query", async (req, res) => {
   }
 });
 
+app.post("/api/query-image", upload.single("image"), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ ok: false, error: "No image file provided" });
+    }
+    const k = Number(req.body.k || 10);
+    const dbPath = resolveDbPath(req.body.dbPath);
+
+    if (!Number.isInteger(k) || k < 1) {
+      return res.status(400).json({ ok: false, error: "k must be >= 1" });
+    }
+    if (!fs.existsSync(dbPath)) {
+      return res.status(400).json({ ok: false, error: `Database not found: ${dbPath}` });
+    }
+
+    // Extract embedding
+    const formData = new FormData();
+    formData.append("image", req.file.buffer, {
+      filename: req.file.originalname || "image.jpg",
+      contentType: req.file.mimetype || "image/jpeg",
+      knownLength: req.file.buffer.length,
+    });
+
+    let extractResponse;
+    try {
+      extractResponse = await new Promise((resolve, reject) => {
+        formData.submit(`${IMAGE_SEARCH_API}/extract`, (err, res) => {
+          if (err) reject(err);
+          else resolve(res);
+        });
+      });
+    } catch (fetchError) {
+      return res.status(503).json({ ok: false, error: "Image extraction service unavailable." });
+    }
+
+    let extractDataRaw = "";
+    for await (const chunk of extractResponse) {
+      extractDataRaw += chunk;
+    }
+    const extractData = JSON.parse(extractDataRaw);
+
+    if (!extractData.ok) {
+      return res.status(500).json({ ok: false, error: extractData.error || "Failed to extract vector" });
+    }
+
+    // Determine DB dimensions using a dummy query
+    let dbDims = 128;
+    try {
+      const dummyRun = await execFileAsync(BENCHMARK_BIN, [dbPath, "all:1", "1"]);
+      const match = dummyRun.stdout.match(/dims:\s+(\d+)/);
+      if (match) dbDims = Number(match[1]);
+    } catch (e) {
+      // Ignored if query fails, we guess 128
+    }
+
+    let chosenVec = extractData.vector;
+    if (extractData.pca_dims && extractData.pca_dims === dbDims) {
+      chosenVec = extractData.vector_pca;
+    }
+
+    const vectorStr = chosenVec.join(",");
+    const querySelector = `vec:${vectorStr}`;
+
+    const parsed = await runBenchmark({ dbPath, querySelector, k });
+
+    if (mongoose.connection.readyState === 1) {
+      await QueryLog.create({
+        queryId: -2,
+        k,
+        dbPath,
+        metrics: parsed.metrics,
+        results: parsed.results,
+      });
+    }
+
+    return res.json({ ok: true, query: { queryId: "image", k, dbPath }, data: parsed });
+  } catch (error) {
+    if (error && (error.killed || error.code === "ETIMEDOUT" || error.signal === "SIGTERM")) {
+      return res.status(408).json({
+        ok: false,
+        error: "Query timed out.",
+      });
+    }
+    return res.status(500).json({ ok: false, error: error.message });
+  }
+});
+
 app.get("/api/query-logs", async (_req, res) => {
   try {
     if (mongoose.connection.readyState !== 1) {

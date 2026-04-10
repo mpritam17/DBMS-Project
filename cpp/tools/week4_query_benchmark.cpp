@@ -160,18 +160,28 @@ bool parseAllSelector(const std::string& selector, std::size_t* out_limit) {
     return true;
 }
 
-QueryMetrics benchmarkSingleQuery(
+bool parseVecSelector(const std::string& selector, std::vector<float>& out_vec) {
+    const std::string prefix = "vec:";
+    if (selector.rfind(prefix, 0) != 0) {
+        return false;
+    }
+    
+    std::string vals = selector.substr(prefix.size());
+    std::size_t start = 0, end = 0;
+    while ((end = vals.find(',', start)) != std::string::npos) {
+        out_vec.push_back(std::stof(vals.substr(start, end - start)));
+        start = end + 1;
+    }
+    out_vec.push_back(std::stof(vals.substr(start)));
+    return true;
+}
+
+QueryMetrics benchmarkSingleQueryRaw(
     const RTreeIndex& index,
     const std::vector<StoredVector>& unique_vectors,
-    const std::unordered_map<uint64_t, std::vector<float>>& by_id,
-    uint64_t query_id,
+    const std::vector<float>& query,
+    uint64_t query_id_label,
     std::size_t k) {
-    const auto query_it = by_id.find(query_id);
-    if (query_it == by_id.end()) {
-        throw std::runtime_error("query_id not found in embedding store");
-    }
-    const std::vector<float>& query = query_it->second;
-
     const auto rtree_start = std::chrono::high_resolution_clock::now();
     const auto rtree_results = index.searchKNN(query, k);
     const auto rtree_end = std::chrono::high_resolution_clock::now();
@@ -187,7 +197,20 @@ QueryMetrics benchmarkSingleQuery(
     const std::size_t denom = std::min(rtree_results.size(), brute_results.size());
     const double recall = denom == 0 ? 0.0 : static_cast<double>(hits) / static_cast<double>(denom);
 
-    return {query_id, rtree_us, brute_us, hits, denom, recall};
+    return {query_id_label, rtree_us, brute_us, hits, denom, recall};
+}
+
+QueryMetrics benchmarkSingleQuery(
+    const RTreeIndex& index,
+    const std::vector<StoredVector>& unique_vectors,
+    const std::unordered_map<uint64_t, std::vector<float>>& by_id,
+    uint64_t query_id,
+    std::size_t k) {
+    const auto query_it = by_id.find(query_id);
+    if (query_it == by_id.end()) {
+        throw std::runtime_error("query_id not found in embedding store");
+    }
+    return benchmarkSingleQueryRaw(index, unique_vectors, query_it->second, query_id, k);
 }
 
 void writeCsv(const std::string& csv_path, const std::vector<QueryMetrics>& rows) {
@@ -255,7 +278,15 @@ int main(int argc, char** argv) {
 
         std::vector<uint64_t> query_ids;
         std::size_t all_limit = 0;
-        if (parseAllSelector(query_selector, &all_limit)) {
+        std::vector<float> parsed_vec_query;
+        bool is_custom_vec = parseVecSelector(query_selector, parsed_vec_query);
+
+        if (is_custom_vec) {
+            query_ids.push_back(999999); // dummy ID
+            if (parsed_vec_query.size() != dims) {
+                throw std::runtime_error("Custom vector dimension mismatch");
+            }
+        } else if (parseAllSelector(query_selector, &all_limit)) {
             query_ids.reserve(unique_vectors.size());
             for (const auto& v : unique_vectors) {
                 query_ids.push_back(v.id);
@@ -288,8 +319,12 @@ int main(int argc, char** argv) {
         std::vector<QueryMetrics> all_metrics;
         all_metrics.reserve(query_ids.size());
 
-        for (uint64_t qid : query_ids) {
-            all_metrics.push_back(benchmarkSingleQuery(index, unique_vectors, by_id, qid, k));
+        if (is_custom_vec) {
+            all_metrics.push_back(benchmarkSingleQueryRaw(index, unique_vectors, parsed_vec_query, 999999, k));
+        } else {
+            for (uint64_t qid : query_ids) {
+                all_metrics.push_back(benchmarkSingleQuery(index, unique_vectors, by_id, qid, k));
+            }
         }
 
         long long total_rtree_us = 0;
