@@ -23,6 +23,9 @@ public:
     std::vector<std::pair<float, uint64_t>> searchKNN(
         const std::vector<float>& query, std::size_t k) const;
 
+    // Returns all values whose stored point exactly matches query coordinates.
+    std::vector<uint64_t> searchExactPoint(const std::vector<float>& query) const;
+
     uint32_t getRootPageId() const;
     uint32_t getMetaPageId() const;
     uint16_t getDimensions() const;

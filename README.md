@@ -3,29 +3,32 @@
 Implementation of a page-backed R-Tree for high-dimensional image indexing.
 
 ## Current Scope
-- C++ storage manager for fixed-size 4KB pages
-- Python embedding extraction pipeline for image datasets
-- C++ slotted pages, `VEC1` binary file parser, and bulk loader
+- C++ storage manager for fixed-size pages (current page size: 16KB)
+- Python embedding extraction and dataset generation pipeline
+- Slotted-page embedding store with VEC1 parser and bulk loader
 - Buffer pool manager with concurrent page latching and LRU-2 style replacement
-- Initial R-Tree node page serialization and bounding-box primitives
-- Recursive R-Tree insertion with node splitting and root growth
-- Week 1 documentation for storage layout and vector export format
-- Week 4 R-tree query layer and full integration tests
-- Week 5 MERN integration scaling up to 60,000 images loaded at 64D with fixed ID map pipeline
+- R-Tree insertion/split, persisted metadata, reopen support, and KNN search
+- First-class exact-point query path in the R-Tree index
+- Week 4 benchmark tool supporting both KNN and exact-point workloads
+- In-memory KD-tree implementation for analysis benchmarks
+- MERN backend/frontend integration, including image search and exact-point benchmark tab
 
 ## Repository Layout
-- `cpp/`: C++ source, headers, and tests
-- `scripts/`: Python utilities for embedding extraction
-- `docs/`: planning and implementation notes
+- `cpp/`: C++ source, tools, and tests
+- `scripts/`: Python utilities and fallback API
+- `mern/`: backend/frontend web app
+- `docs/`: milestone notes and implementation details
 
-## Documentation
-- `docs/WEEK1_START.md`: Week 1 goals and quickstart
-- `docs/WEEK1_IMPLEMENTATION_DETAILS.md`: detailed record of completed implementation and validation
-- `docs/WEEK4_QUERY_LAYER.md`: week 4 R-tree query layer
-- `docs/WEEK5_IMAGE_SEARCH_AND_MERN.md`: Week 5 E2E image search API scaled to 60k high-accuracy (64D) images using MERN
+## Toolchain Requirements
+- CMake 3.16+
+- A C++17-capable compiler
+
+Notes:
+- The code uses C++17 headers such as `filesystem` and `optional`.
+- Very old MinGW toolchains (for example GCC 6.x) are not sufficient.
 
 ## Python Setup
-Create and use the workspace virtual environment:
+Create and use a virtual environment:
 
 ```bash
 python3 -m venv .venv
@@ -33,64 +36,96 @@ source .venv/bin/activate
 python -m pip install -r requirements.txt
 ```
 
-## Build And Run Tests
-Build the C++ executables with CMake:
+## Build And Run C++ Tests
 
 ```bash
 cmake -S . -B build
 cmake --build build
 
-# Run the raw storage manager I/O test
 ./build/storage_smoke
-
-# Run the slotted-page vector packing test
 ./build/packing_test
-
-# Run the buffer-pool regression test
 ./build/bpm_test
-
-# Run the R-tree node serialization test
 ./build/rtree_node_test
-
-# Run the R-tree insertion and split test
 ./build/rtree_insert_test
+./build/rtree_knn_test
+./build/rtree_point_test
+./build/rtree_metadata_test
+./build/kd_tree_test
 ```
 
-## Embedding Export and Bulk Loading
-1. Generate a binary vector file in the `VEC1` format using Python:
+## Embedding Export And Bulk Loading
+1. Export vectors in VEC1 format:
 
 ```bash
 source .venv/bin/activate
 python scripts/extract_embeddings.py --dataset cifar10 --output data/cifar10_vecs.bin --dims 128 --limit 50
 ```
 
-2. Bulk load those vectors into the C++ slotted-page database:
+2. Bulk load into slotted-page DB:
 
 ```bash
 ./build/bulk_load data/cifar10_vecs.bin sample.db
 ```
 
-## Next Milestones
-- Persist index metadata so an R-tree can be reopened from disk by metadata page ID
-- Week 4: end-to-end query layer connecting the KNN index to the embedding store
+## Week 4 Benchmark (KNN + Exact Point)
 
-## Week 4 Query Benchmark
-
-Build and run the Week 4 integration benchmark:
+Build and run:
 
 ```bash
 cmake -S . -B build
 cmake --build build
-./build/week4_query_benchmark sample.db 0 10
-./build/week4_query_benchmark sample.db all 10 week4_metrics.csv
-./build/week4_query_benchmark sample.db all:200 10 week4_metrics_sampled.csv
 ```
 
-It reads vectors from the slotted-page embedding store, builds an R-tree query layer through the buffer pool, executes KNN, and compares R-tree latency/recall against brute-force search. The selector `all:N` runs only the first `N` query vectors, which is useful for fast benchmark iterations on larger datasets.
+KNN selectors:
+
+```bash
+./build/week4_query_benchmark sample.db 0 10
+./build/week4_query_benchmark sample.db all 10 week4_knn_all.csv
+./build/week4_query_benchmark sample.db all:200 10 week4_knn_sample.csv
+./build/week4_query_benchmark sample.db vec:0.1,0.2,0.3,... 10
+```
+
+Exact-point selectors:
+
+```bash
+./build/week4_query_benchmark sample.db pointid:0 1
+./build/week4_query_benchmark sample.db pointall 1 week4_point_all.csv
+./build/week4_query_benchmark sample.db pointall:200 1 week4_point_sample.csv
+./build/week4_query_benchmark sample.db pointvec:0.1,0.2,0.3,... 1
+```
+
+The benchmark reports:
+- KNN latency/recall (KNN mode)
+- Exact-point latency and exact-match rate (point mode)
+- Storage reads/writes
+- Buffer pool hit-rate stats
+
+## KD-Tree Analysis Benchmark
+
+Build and run:
+
+```bash
+cmake -S . -B build
+cmake --build build
+```
+
+Run comparative analysis (R-tree vs KD-tree vs brute-force):
+
+```bash
+./build/kd_analysis_benchmark sample.db 0 10
+./build/kd_analysis_benchmark sample.db all 10 kd_analysis_all.csv
+./build/kd_analysis_benchmark sample.db all:200 10 kd_analysis_sample.csv
+./build/kd_analysis_benchmark sample.db vec:0.1,0.2,0.3,... 10
+```
+
+The analysis benchmark reports:
+- R-tree, KD-tree, and brute-force latency
+- Recall@k for both R-tree and KD-tree against brute-force truth
+- Storage I/O and buffer-pool hit-rate counters from the R-tree path
+
+This benchmark is additive and does not change existing week4 query API behavior.
 
 ## SQLite Vs R-Tree Comparison
-
-To compare baseline SQLite scan latency against your custom R-tree access path:
 
 ```bash
 python scripts/benchmark_sqlite_vs_rtree.py \
@@ -101,47 +136,17 @@ python scripts/benchmark_sqlite_vs_rtree.py \
   --output-csv sqlite_vs_rtree_metrics.csv
 ```
 
-This command:
+## MERN App
 
-- runs `week4_query_benchmark` for R-tree and brute-force timings,
-- loads the same vectors into a temporary SQLite table,
-- times SQLite KNN scans using SQL `ORDER BY` distance,
-- writes merged per-query metrics to `sqlite_vs_rtree_metrics.csv`.
-
-## Cleanup Generated Files
-
-Preview cleanup targets:
-
-```bash
-bash scripts/cleanup_generated_files.sh --dry-run
-```
-
-Apply cleanup:
-
-```bash
-bash scripts/cleanup_generated_files.sh --apply
-```
-
-Optional: also delete frontend/backend `node_modules` and frontend `dist`:
-
-```bash
-bash scripts/cleanup_generated_files.sh --apply --include-node-modules
-```
-
-## End-to-End Image Search API (MERN)
-
-A MERN scaffold is available in `mern/`.
-
-Start backend:
+Backend:
 
 ```bash
 cd mern/backend
 npm install
-cp .env.example .env
 npm run dev
 ```
 
-Start frontend:
+Frontend:
 
 ```bash
 cd mern/frontend
@@ -149,25 +154,34 @@ npm install
 npm run dev
 ```
 
-Backend query endpoint:
+Main backend endpoints:
+- `POST /api/query` (KNN benchmark)
+- `POST /api/point-query` (exact-point benchmark)
+- `POST /api/query-image` and `POST /api/image-search` (image-driven flows)
 
-```bash
-curl -X POST http://localhost:5000/api/query \
-  -H "Content-Type: application/json" \
-  -d '{"queryId":0,"k":10,"dbPath":"/home/quantumec/Documents/DBMS_term_project/sample.db"}'
-```
+Frontend includes three tabs:
+- Image Search
+- Query Benchmark
+- Exact Point
 
-Fallback lightweight Python API remains available:
+## Optional Python Fallback API
 
 ```bash
 python scripts/week4_query_api.py --db sample.db --host 127.0.0.1 --port 8080
 ```
 
-## Generate New 64D Dataset
-To regenerate the 60,000 CIFAR-10 embeddings mapping to 64D features over ResNet-18:
+## Dataset Regeneration (60k CIFAR-10, 64D)
+
 ```bash
 source .venv/bin/activate
-# This safely parses and sets 60,000 photos, bypassing index sorting faults previously identified.
 python scripts/populate_database.py --source cifar10 --count 60000 --pca-dims 64
 ./build/bulk_load data/sample_vecs.bin sample.db
+```
+
+## Cleanup Generated Files
+
+```bash
+bash scripts/cleanup_generated_files.sh --dry-run
+bash scripts/cleanup_generated_files.sh --apply
+bash scripts/cleanup_generated_files.sh --apply --include-node-modules
 ```

@@ -61,10 +61,32 @@ function parseBenchmarkOutput(output) {
   pull("rtreeUs", /Average R-tree KNN latency:\s+([0-9.]+)\s+us/);
   pull("bruteUs", /Average brute-force latency:\s+([0-9.]+)\s+us/);
   pull("recall", /Average recall@k:\s+([0-9.]+)/);
+  pull("pointUs", /Average exact-point latency:\s+([0-9.]+)\s+us/);
+  pull("pointBruteUs", /Average brute-force exact-point latency:\s+([0-9.]+)\s+us/);
+  pull("pointMatchRate", /Exact-point match rate:\s+([0-9.]+)/);
+  pull("pointExactMatches", /Exact-point match rate:\s+[0-9.]+\s+\((\d+)\/\d+\)/);
+  pull("pointQueries", /Exact-point match rate:\s+[0-9.]+\s+\(\d+\/(\d+)\)/);
   pull("diskReads", /reads=(\d+)/);
   pull("diskWrites", /writes=(\d+)/);
+  pull("bpmHitRatePercent", /Buffer Pool hit rate \(BPM\):\s+([0-9.]+)%/);
+  pull("bpmHits", /Buffer Pool hit rate \(BPM\):\s+[0-9.]+% \(hits=(\d+),/);
+  pull("bpmFetches", /Buffer Pool hit rate \(BPM\):\s+[0-9.]+% \(hits=\d+, fetches=(\d+),/);
+  pull("bpmMisses", /Buffer Pool hit rate \(BPM\):\s+[0-9.]+% \(hits=\d+, fetches=\d+, misses=(\d+)\)/);
 
   for (const line of output.split("\n")) {
+    const pointRow = line.trim().match(/^(\d+)\.\s+(\d+),\s+([0-9.]+),\s+([0-9.]+),\s+(\d+),\s+(\d+),\s+(\d+)$/);
+    if (pointRow) {
+      results.push({
+        queryId: Number(pointRow[2]),
+        pointUs: Number(pointRow[3]),
+        bruteUs: Number(pointRow[4]),
+        rtreeHits: Number(pointRow[5]),
+        bruteHits: Number(pointRow[6]),
+        exactMatch: Number(pointRow[7]) === 1,
+      });
+      continue;
+    }
+
     const row = line.trim().match(/^\d+\.\s+(\d+),\s+([0-9.]+),\s+([0-9.]+),\s+([0-9.]+)/);
     if (row) {
       results.push({
@@ -154,6 +176,59 @@ app.post("/api/query", async (req, res) => {
         error:
           "Query timed out. This benchmark rebuilds an index per request; use a smaller DB (e.g. large_3000.db) for interactive UI, or run CLI benchmarks offline.",
       });
+    }
+    return res.status(500).json({ ok: false, error: error.message });
+  }
+});
+
+app.post("/api/point-query", async (req, res) => {
+  try {
+    const rawQueryId = String(req.body.queryId ?? "").trim().toLowerCase();
+    const dbPath = resolveDbPath(req.body.dbPath);
+
+    let querySelector;
+    let queryLogId = -3;
+    let queryLabel = rawQueryId;
+
+    if (rawQueryId === "all") {
+      querySelector = "pointall";
+    } else if (rawQueryId.startsWith("all:")) {
+      const limit = Number(rawQueryId.slice(4));
+      if (!Number.isInteger(limit) || limit < 1) {
+        return res.status(400).json({ ok: false, error: "queryId all:N requires N >= 1" });
+      }
+      querySelector = `pointall:${limit}`;
+      queryLabel = `all:${limit}`;
+    } else {
+      const queryId = Number(req.body.queryId);
+      if (!Number.isInteger(queryId) || queryId < 0) {
+        return res.status(400).json({ ok: false, error: "queryId must be a non-negative integer, 'all', or 'all:N'" });
+      }
+      querySelector = `pointid:${queryId}`;
+      queryLogId = queryId;
+      queryLabel = queryId;
+    }
+
+    if (!fs.existsSync(dbPath)) {
+      return res.status(400).json({ ok: false, error: `Database not found: ${dbPath}` });
+    }
+
+    const parsed = await runBenchmark({ dbPath, querySelector, k: 1 });
+
+    if (mongoose.connection.readyState === 1) {
+      await QueryLog.create({
+        queryId: queryLogId,
+        k: 1,
+        dbPath,
+        metrics: parsed.metrics,
+        results: parsed.results,
+      });
+    }
+
+    return res.json({ ok: true, query: { queryId: queryLabel, dbPath }, data: parsed });
+  } catch (error) {
+    if (error && (error.killed || error.code === "ETIMEDOUT" || error.signal === "SIGTERM")) {
+      return res.status(408).json({ ok: false, error: "Exact-point benchmark timed out." });
     }
     return res.status(500).json({ ok: false, error: error.message });
   }

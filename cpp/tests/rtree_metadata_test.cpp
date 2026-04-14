@@ -21,12 +21,18 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
+#include <limits>
+#include <string>
 #include <vector>
 
-static const char* kDbFile = "/tmp/rtree_metadata_test.db";
+static std::string make_temp_path() {
+    return (std::filesystem::temp_directory_path() / "rtree_metadata_test.db").string();
+}
 
 int main() {
-    std::remove(kDbFile);
+    const std::string db_file = make_temp_path();
+    std::remove(db_file.c_str());
 
     // -----------------------------------------------------------------------
     // Phase 1: create, populate, and flush.
@@ -39,7 +45,7 @@ int main() {
 
     {
         StorageManager sm;
-        sm.open(kDbFile);
+        sm.open(db_file);
         BufferPoolManager bpm(64, &sm);
         RTreeIndex idx(&bpm, static_cast<uint16_t>(2));
 
@@ -71,7 +77,7 @@ int main() {
     // -----------------------------------------------------------------------
     {
         StorageManager sm;
-        sm.open(kDbFile);
+        sm.open(db_file);
         BufferPoolManager bpm(64, &sm);
 
         // Open the existing index by meta page id (no dimensions argument).
@@ -103,7 +109,7 @@ int main() {
     // -----------------------------------------------------------------------
     {
         StorageManager sm;
-        sm.open(kDbFile);
+        sm.open(db_file);
         BufferPoolManager bpm(16, &sm);
 
         bool threw = false;
@@ -116,7 +122,7 @@ int main() {
         assert(threw && "opening index from a non-meta page must throw");
     }
 
-    std::remove(kDbFile);
+    std::remove(db_file.c_str());
     std::printf("R-tree metadata persistence test passed.\n");
     return 0;
 }

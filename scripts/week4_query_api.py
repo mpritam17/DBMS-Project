@@ -30,6 +30,10 @@ def parse_benchmark_output(raw_output: str) -> dict:
         "recall": r"Average recall@k:\s+([0-9.]+)",
         "disk_reads": r"Disk I/O counters \(StorageManager\): reads=(\d+)",
         "disk_writes": r"Disk I/O counters \(StorageManager\): reads=\d+, writes=(\d+)",
+        "bpm_hit_rate_percent": r"Buffer Pool hit rate \(BPM\):\s+([0-9.]+)%",
+        "bpm_hits": r"Buffer Pool hit rate \(BPM\):\s+[0-9.]+% \(hits=(\d+),",
+        "bpm_fetches": r"Buffer Pool hit rate \(BPM\):\s+[0-9.]+% \(hits=\d+, fetches=(\d+),",
+        "bpm_misses": r"Buffer Pool hit rate \(BPM\):\s+[0-9.]+% \(hits=\d+, fetches=\d+, misses=(\d+)\)",
     }
 
     for key, pattern in patterns.items():

@@ -27,11 +27,13 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
 #include <set>
 #include <vector>
 
 static std::string make_temp_path(const char* tag) {
-    return std::string("/tmp/rtree_knn_test_") + tag + ".db";
+    const std::filesystem::path base = std::filesystem::temp_directory_path();
+    return (base / (std::string("rtree_knn_test_") + tag + ".db")).string();
 }
 
 // ---------------------------------------------------------------------------

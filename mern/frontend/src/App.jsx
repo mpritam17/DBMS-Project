@@ -388,6 +388,167 @@ function QueryBenchmarkTab() {
   );
 }
 
+function ExactPointTab() {
+  const [mode, setMode] = useState("single");
+  const [queryId, setQueryId] = useState("0");
+  const [allLimit, setAllLimit] = useState("200");
+  const [dbPath, setDbPath] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [payload, setPayload] = useState(null);
+
+  const submit = async (event) => {
+    event.preventDefault();
+    setLoading(true);
+    setError("");
+
+    try {
+      let pointSelector;
+      if (mode === "single") {
+        const numericId = Number(queryId);
+        if (!Number.isInteger(numericId) || numericId < 0) {
+          throw new Error("Point Query ID must be a non-negative integer");
+        }
+        pointSelector = numericId;
+      } else {
+        const trimmed = allLimit.trim();
+        if (trimmed.length === 0) {
+          pointSelector = "all";
+        } else {
+          const limit = Number(trimmed);
+          if (!Number.isInteger(limit) || limit < 1) {
+            throw new Error("All-limit must be >= 1");
+          }
+          pointSelector = `all:${limit}`;
+        }
+      }
+
+      const requestBody = { queryId: pointSelector };
+      if (dbPath.trim().length > 0) {
+        requestBody.dbPath = dbPath.trim();
+      }
+
+      const response = await fetch("/api/point-query", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(requestBody),
+      });
+
+      const data = await response.json();
+      if (!response.ok || !data.ok) {
+        throw new Error(data.error || "Exact-point query failed");
+      }
+
+      setPayload(data);
+    } catch (err) {
+      setError(err.message);
+      setPayload(null);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const metrics = payload?.data?.metrics || {};
+  const rows = payload?.data?.results || [];
+
+  return (
+    <>
+      <form className="card" onSubmit={submit}>
+        <label>
+          Mode
+          <select value={mode} onChange={(e) => setMode(e.target.value)}>
+            <option value="single">Single Point ID</option>
+            <option value="all">Benchmark All / All:N</option>
+          </select>
+        </label>
+
+        {mode === "single" ? (
+          <label>
+            Point Query ID
+            <input value={queryId} onChange={(e) => setQueryId(e.target.value)} />
+          </label>
+        ) : (
+          <label>
+            All Limit (optional)
+            <input
+              value={allLimit}
+              placeholder="Leave blank for all"
+              onChange={(e) => setAllLimit(e.target.value)}
+            />
+          </label>
+        )}
+
+        <label>
+          DB Path
+          <input value={dbPath} placeholder="(optional) e.g. sample.db" onChange={(e) => setDbPath(e.target.value)} />
+        </label>
+
+        <button type="submit" disabled={loading}>
+          {loading ? "Running..." : "Run Exact Point Query"}
+        </button>
+      </form>
+
+      {error && <p className="error">{error}</p>}
+
+      {payload && (
+        <section className="card">
+          <h2>Exact-Point Metrics</h2>
+          <div className="grid">
+            <div>
+              <strong>Exact point us:</strong> {metrics.pointUs}
+            </div>
+            <div>
+              <strong>Brute exact us:</strong> {metrics.pointBruteUs}
+            </div>
+            <div>
+              <strong>Match rate:</strong> {metrics.pointMatchRate}
+            </div>
+            <div>
+              <strong>Exact matches:</strong> {metrics.pointExactMatches}/{metrics.pointQueries}
+            </div>
+            <div>
+              <strong>BPM hit rate %:</strong> {metrics.bpmHitRatePercent}
+            </div>
+            <div>
+              <strong>Dims:</strong> {metrics.dims}
+            </div>
+          </div>
+        </section>
+      )}
+
+      {rows.length > 0 && (
+        <section className="card">
+          <h2>Per-query Exact Rows</h2>
+          <table>
+            <thead>
+              <tr>
+                <th>Query ID</th>
+                <th>Point (us)</th>
+                <th>Brute (us)</th>
+                <th>R-tree hits</th>
+                <th>Brute hits</th>
+                <th>Exact Match</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((row, idx) => (
+                <tr key={`${row.queryId}-${idx}`}>
+                  <td>{row.queryId}</td>
+                  <td>{row.pointUs}</td>
+                  <td>{row.bruteUs}</td>
+                  <td>{row.rtreeHits}</td>
+                  <td>{row.bruteHits}</td>
+                  <td>{row.exactMatch ? "Yes" : "No"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </section>
+      )}
+    </>
+  );
+}
+
 export default function App() {
   const [activeTab, setActiveTab] = useState("image-search");
 
@@ -405,10 +566,14 @@ export default function App() {
         <button className={activeTab === "benchmark" ? "active" : ""} onClick={() => setActiveTab("benchmark")}>
           📊 Query Benchmark
         </button>
+        <button className={activeTab === "point" ? "active" : ""} onClick={() => setActiveTab("point")}>
+          🎯 Exact Point
+        </button>
       </div>
 
       {activeTab === "image-search" && <ImageSearchTab />}
       {activeTab === "benchmark" && <QueryBenchmarkTab />}
+      {activeTab === "point" && <ExactPointTab />}
     </div>
   );
 }
