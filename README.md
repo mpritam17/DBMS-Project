@@ -163,6 +163,19 @@ Fallback lightweight Python API remains available:
 python scripts/week4_query_api.py --db sample.db --host 127.0.0.1 --port 8080
 ```
 
+Image search API startup (PCA enabled by default via `data/pca_model.npz`):
+
+```bash
+source .venv/bin/activate
+python scripts/image_search_api.py --vec-file data/sample_vecs.bin --image-dir data/sample_images
+```
+
+If needed, PCA can be disabled explicitly:
+
+```bash
+python scripts/image_search_api.py --vec-file data/sample_vecs.bin --image-dir data/sample_images --no-pca --embedding-dims 64
+```
+
 ## Generate New 64D Dataset
 To regenerate the 60,000 CIFAR-10 embeddings mapping to 64D features over ResNet-18:
 ```bash

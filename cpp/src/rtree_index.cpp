@@ -40,9 +40,9 @@ double enlargementScore(const BoundingBox& current, const BoundingBox& incoming)
     return boxMargin(expanded) - boxMargin(current);
 }
 
-// Minimum Euclidean distance from a query point to the surface of an MBR.
-// Returns 0 when the query is inside the box.
-double minDistToBox(const std::vector<float>& query, const BoundingBox& box) {
+// Minimum squared Euclidean distance from a query point to the surface of an
+// MBR. Returns 0 when the query is inside the box.
+double minDistSqToBox(const std::vector<float>& query, const BoundingBox& box) {
     double dist_sq = 0.0;
     for (std::size_t i = 0; i < query.size(); ++i) {
         double q = static_cast<double>(query[i]);
@@ -56,7 +56,24 @@ double minDistToBox(const std::vector<float>& query, const BoundingBox& box) {
         }
         dist_sq += d * d;
     }
-    return std::sqrt(dist_sq);
+    return dist_sq;
+}
+
+double minDistSqToBox(const std::vector<float>& query, const float* lower, const float* upper, std::size_t dims) {
+    double dist_sq = 0.0;
+    for (std::size_t i = 0; i < dims; ++i) {
+        const double q = static_cast<double>(query[i]);
+        const double lo = static_cast<double>(lower[i]);
+        const double hi = static_cast<double>(upper[i]);
+        double d = 0.0;
+        if (q < lo) {
+            d = lo - q;
+        } else if (q > hi) {
+            d = q - hi;
+        }
+        dist_sq += d * d;
+    }
+    return dist_sq;
 }
 
 BoundingBox computeEntriesMBR(const std::vector<RTreeEntry>& entries) {
@@ -214,43 +231,56 @@ std::vector<std::pair<float, uint64_t>> RTreeIndex::searchKNN(
 
     // Min-heap: pop the page/entry with the smallest lower-bound distance first.
     struct QueueItem {
-        double min_dist;
+        double min_dist_sq;
         uint32_t page_id;
-        bool operator>(const QueueItem& other) const { return min_dist > other.min_dist; }
+        bool operator>(const QueueItem& other) const { return min_dist_sq > other.min_dist_sq; }
     };
-    std::priority_queue<QueueItem, std::vector<QueueItem>, std::greater<QueueItem>> pq;
+    std::vector<QueueItem> queue_storage;
+    queue_storage.reserve(256);
+    std::priority_queue<QueueItem, std::vector<QueueItem>, std::greater<QueueItem>> pq(
+        std::greater<QueueItem>(), std::move(queue_storage));
     pq.push({0.0, root_page_id_});
 
     // Max-heap of size k to track the current k nearest: top = current worst distance.
     using ResultEntry = std::pair<double, uint64_t>;
     std::priority_queue<ResultEntry> results;
+    const std::size_t dims = query.size();
 
     while (!pq.empty()) {
-        auto [min_dist, page_id] = pq.top();
+        auto [min_dist_sq, page_id] = pq.top();
         pq.pop();
 
         // Prune: this subtree cannot improve on our worst accepted distance.
-        if (results.size() >= k && min_dist >= results.top().first) {
+        if (results.size() >= k && min_dist_sq >= results.top().first) {
             continue;
         }
 
         RTreeNodePage node = loadNode(page_id);
+        const uint16_t entry_count = node.getEntryCount();
 
         if (node.isLeaf()) {
-            for (const RTreeEntry& entry : node.getEntries()) {
-                double dist = minDistToBox(query, entry.mbr);
-                if (results.size() < k || dist < results.top().first) {
-                    results.push({dist, entry.value});
+            for (uint16_t i = 0; i < entry_count; ++i) {
+                const float* lower = nullptr;
+                const float* upper = nullptr;
+                uint64_t value = 0;
+                node.getEntryView(i, lower, upper, value);
+                const double dist_sq = minDistSqToBox(query, lower, upper, dims);
+                if (results.size() < k || dist_sq < results.top().first) {
+                    results.push({dist_sq, value});
                     if (results.size() > k) {
                         results.pop();
                     }
                 }
             }
         } else {
-            for (const RTreeEntry& entry : node.getEntries()) {
-                double child_min_dist = minDistToBox(query, entry.mbr);
-                if (results.size() < k || child_min_dist < results.top().first) {
-                    pq.push({child_min_dist, static_cast<uint32_t>(entry.value)});
+            for (uint16_t i = 0; i < entry_count; ++i) {
+                const float* lower = nullptr;
+                const float* upper = nullptr;
+                uint64_t value = 0;
+                node.getEntryView(i, lower, upper, value);
+                const double child_min_dist_sq = minDistSqToBox(query, lower, upper, dims);
+                if (results.size() < k || child_min_dist_sq < results.top().first) {
+                    pq.push({child_min_dist_sq, static_cast<uint32_t>(value)});
                 }
             }
         }
@@ -260,7 +290,7 @@ std::vector<std::pair<float, uint64_t>> RTreeIndex::searchKNN(
     std::vector<std::pair<float, uint64_t>> output;
     output.reserve(results.size());
     while (!results.empty()) {
-        output.emplace_back(static_cast<float>(results.top().first), results.top().second);
+        output.emplace_back(static_cast<float>(std::sqrt(results.top().first)), results.top().second);
         results.pop();
     }
     std::reverse(output.begin(), output.end());

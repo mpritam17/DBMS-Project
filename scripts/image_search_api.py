@@ -294,7 +294,8 @@ def main():
     parser.add_argument("--host", default="127.0.0.1", help="Host to bind to")
     parser.add_argument("--port", type=int, default=5001, help="Port to listen on")
     parser.add_argument("--vec-file", required=True, help="Path to VEC1 binary file")
-    parser.add_argument("--pca-model", default=None, help="Path to PCA model .npz file")
+    parser.add_argument("--pca-model", default="data/pca_model.npz", help="Path to PCA model .npz file (default: data/pca_model.npz)")
+    parser.add_argument("--no-pca", action="store_true", help="Disable PCA even if --pca-model exists")
     parser.add_argument("--image-dir", default=None, help="Directory containing source images")
     parser.add_argument("--embedding-dims", type=int, default=128,
                         help="Embedding dimensions before PCA (default: 128)")
@@ -326,15 +327,17 @@ def main():
         transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
     ])
     
-    # Load PCA model if provided
-    if args.pca_model:
+    # Load PCA model unless explicitly disabled.
+    if not args.no_pca and args.pca_model:
         pca_path = Path(args.pca_model)
         if pca_path.exists():
             print(f"Loading PCA model from {pca_path}...")
             _state["pca"] = load_pca_model(pca_path)
             print(f"  PCA reduces to {_state['pca']['components'].shape[0]} dimensions")
         else:
-            print(f"Warning: PCA model not found at {pca_path}, skipping")
+            print(f"Warning: PCA model not found at {pca_path}, continuing without PCA")
+    elif args.no_pca:
+        print("PCA disabled via --no-pca")
     
     # Load vectors
     vec_path = Path(args.vec_file)
@@ -350,7 +353,7 @@ def main():
         if args.embedding_dims != dims:
             raise SystemExit(
                 f"Dimension mismatch at startup: query pipeline outputs {args.embedding_dims}D "
-                f"but index has {dims}D. Set --embedding-dims {dims} or provide --pca-model."
+                f"but index has {dims}D. Set --embedding-dims {dims}, provide --pca-model, or remove --no-pca."
             )
     else:
         pca_input_dims = int(_state["pca"]["components"].shape[1])

@@ -36,6 +36,17 @@ struct QueryMetrics {
     double recall;
 };
 
+struct BenchmarkOptions {
+    bool fair_mode = false;
+    std::size_t bpm_pages = 2048;
+    bool bpm_pages_explicit = false;
+};
+
+constexpr std::size_t kDefaultBpmPages = 2048;
+constexpr std::size_t kAutoBpmMinPages = 2048;
+constexpr std::size_t kAutoBpmMaxPages = 8192;
+constexpr std::size_t kAutoBpmHeadroomPages = 128;
+
 float l2Distance(const std::vector<float>& a, const std::vector<float>& b) {
     if (a.size() != b.size()) {
         throw std::invalid_argument("L2 distance dimension mismatch");
@@ -129,6 +140,23 @@ std::size_t recallAtK(
         }
     }
     return hits;
+}
+
+std::size_t computeAutoBpmPages(std::uint64_t index_page_count) {
+    const std::size_t target = static_cast<std::size_t>(index_page_count) + kAutoBpmHeadroomPages;
+    return std::max(kAutoBpmMinPages, std::min(kAutoBpmMaxPages, target));
+}
+
+void warmIndexCache(BufferPoolManager& bpm, std::uint64_t page_count) {
+    for (std::uint64_t page_id = 0; page_id < page_count; ++page_id) {
+        Page* page = bpm.fetchPage(static_cast<uint32_t>(page_id));
+        if (page == nullptr) {
+            throw std::runtime_error("Failed to warm index cache: fetchPage returned null");
+        }
+        if (!bpm.unpinPage(static_cast<uint32_t>(page_id), false)) {
+            throw std::runtime_error("Failed to warm index cache: unpinPage failed");
+        }
+    }
 }
 
 bool parseAllSelector(const std::string& selector, std::size_t* out_limit) {
@@ -239,15 +267,58 @@ void writeCsv(const std::string& csv_path, const std::vector<QueryMetrics>& rows
 
 int main(int argc, char** argv) {
     if (argc < 4) {
-        std::cerr << "Usage: " << argv[0] << " <db_file> <query_id|all|all:N> <k> [csv_output_path]\n";
+        std::cerr << "Usage: " << argv[0]
+                  << " <db_file> <query_id|all|all:N|vec:x,y,...> <k>"
+                  << " [csv_output_path] [--fair] [--bpm-pages N|auto]\n";
         return 1;
     }
 
     const std::string db_file = argv[1];
     const std::string query_selector = argv[2];
     const std::size_t k = static_cast<std::size_t>(std::stoull(argv[3]));
-    const bool emit_csv = argc >= 5;
-    const std::string csv_path = emit_csv ? argv[4] : std::string();
+    BenchmarkOptions options{};
+    options.bpm_pages = kDefaultBpmPages;
+    bool emit_csv = false;
+    std::string csv_path;
+
+    int argi = 4;
+    if (argi < argc) {
+        const std::string maybe_csv = argv[argi];
+        if (maybe_csv.rfind("--", 0) != 0) {
+            emit_csv = true;
+            csv_path = maybe_csv;
+            ++argi;
+        }
+    }
+
+    while (argi < argc) {
+        const std::string arg = argv[argi];
+        if (arg == "--fair") {
+            options.fair_mode = true;
+            ++argi;
+            continue;
+        }
+        if (arg == "--bpm-pages") {
+            if (argi + 1 >= argc) {
+                throw std::runtime_error("--bpm-pages requires a value (N or auto)");
+            }
+            const std::string value = argv[argi + 1];
+            if (value == "auto") {
+                options.bpm_pages_explicit = false;
+            } else {
+                const std::size_t parsed = static_cast<std::size_t>(std::stoull(value));
+                if (parsed == 0) {
+                    throw std::runtime_error("--bpm-pages requires N >= 1");
+                }
+                options.bpm_pages = parsed;
+                options.bpm_pages_explicit = true;
+            }
+            argi += 2;
+            continue;
+        }
+        throw std::runtime_error("Unknown argument: " + arg);
+    }
+
     if (k == 0) {
         std::cerr << "k must be >= 1\n";
         return 1;
@@ -308,9 +379,6 @@ int main(int argc, char** argv) {
             query_ids.push_back(std::stoull(query_selector));
         }
 
-        StorageManager::disk_reads = 0;
-        StorageManager::disk_writes = 0;
-
         // Build the R-tree in a separate temp DB to avoid mixing index pages
         // with embedding slotted pages in the source file. Re-use if exists!
         const std::string index_db_file = db_file + ".rtree_tmp.db";
@@ -319,8 +387,12 @@ int main(int argc, char** argv) {
         StorageManager index_storage;
         index_storage.open(index_db_file);
 
-        // Increased buffer pool size for building the index over 60k vectors smoothly
-        BufferPoolManager bpm(2048, &index_storage);
+        const std::uint64_t index_page_count = index_storage.pageCount();
+        if (!options.bpm_pages_explicit) {
+            options.bpm_pages = computeAutoBpmPages(index_page_count);
+        }
+
+        BufferPoolManager bpm(options.bpm_pages, &index_storage);
         
         RTreeIndex* index_ptr = nullptr;
         if (build_index) {
@@ -336,6 +408,26 @@ int main(int argc, char** argv) {
             std::cout << "Loaded existing R-Tree index from " << index_db_file << "\n";
         }
         RTreeIndex& index = *index_ptr;
+        const std::uint64_t measured_index_page_count = index_storage.pageCount();
+
+        if (options.fair_mode) {
+            warmIndexCache(bpm, measured_index_page_count);
+
+            // Prime traversal and branch predictor/cache effects before timed run.
+            if (is_custom_vec) {
+                (void) index.searchKNN(parsed_vec_query, k);
+            } else {
+                for (uint64_t qid : query_ids) {
+                    const auto query_it = by_id.find(qid);
+                    if (query_it != by_id.end()) {
+                        (void) index.searchKNN(query_it->second, k);
+                    }
+                }
+            }
+        }
+
+        StorageManager::disk_reads = 0;
+        StorageManager::disk_writes = 0;
 
         std::vector<std::pair<float, uint64_t>> out_results;
         std::vector<QueryMetrics> all_metrics;
@@ -374,6 +466,8 @@ int main(int argc, char** argv) {
         std::cout << "  query_selector: " << query_selector << "\n";
         std::cout << "  queries_run: " << all_metrics.size() << "\n";
         std::cout << "  k: " << k << "\n";
+        std::cout << "  fair_mode: " << (options.fair_mode ? "on" : "off") << "\n";
+        std::cout << "  bpm_pages: " << options.bpm_pages << "\n";
         std::cout << "\n";
         std::cout << "Average R-tree KNN latency: " << avg_rtree_us << " us\n";
         std::cout << "Average brute-force latency: " << avg_brute_us << " us\n";

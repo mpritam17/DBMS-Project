@@ -15,7 +15,10 @@ node_modules/
 mern/frontend/dist/
 
 week1_smoke.db
-data/
+# Keep generated datasets out of git, but allow committing the PCA model
+# needed by the image search API default startup path.
+data/*
+!data/pca_model.npz
 DBMS_proposal-4.txt
 
 # Local generated benchmark artifacts and shell outputs

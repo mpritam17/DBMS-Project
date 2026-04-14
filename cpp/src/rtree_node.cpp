@@ -248,6 +248,21 @@ std::vector<RTreeEntry> RTreeNodePage::getEntries() const {
     return entries;
 }
 
+void RTreeNodePage::getEntryView(uint16_t index, const float*& lower, const float*& upper, uint64_t& value) const {
+    const NodeHeader* node = nodeHeader();
+    if (index >= node->entry_count) {
+        throw std::out_of_range("R-tree entry index out of range");
+    }
+
+    const std::size_t dims = node->dimensions;
+    const std::size_t offset = entryOffset(index);
+    const std::size_t coordinate_bytes = dims * sizeof(float);
+
+    lower = reinterpret_cast<const float*>(data_.data() + offset);
+    upper = reinterpret_cast<const float*>(data_.data() + offset + coordinate_bytes);
+    std::memcpy(&value, data_.data() + offset + (2 * coordinate_bytes), sizeof(value));
+}
+
 BoundingBox RTreeNodePage::computeNodeMBR() const {
     if (getEntryCount() == 0) {
         throw std::runtime_error("Cannot compute MBR for empty R-tree node");

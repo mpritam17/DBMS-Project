@@ -36,7 +36,7 @@ python scripts/populate_database.py --source cifar10 --count 60000 --pca-dims 64
 Launch the Flask model processor (default port 5001):
 ```bash
 source .venv/bin/activate
-python scripts/image_search_api.py --vec-file data/sample_vecs.bin --image-dir data/sample_images --pca-model data/pca_model.npz
+python scripts/image_search_api.py --vec-file data/sample_vecs.bin --image-dir data/sample_images
 ```
 
 ### Start the MERN Environment

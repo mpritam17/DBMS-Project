@@ -54,6 +54,7 @@ public:
     bool addEntry(const BoundingBox& mbr, uint64_t value);
     RTreeEntry getEntry(uint16_t index) const;
     std::vector<RTreeEntry> getEntries() const;
+    void getEntryView(uint16_t index, const float*& lower, const float*& upper, uint64_t& value) const;
     BoundingBox computeNodeMBR() const;
 
 private:
