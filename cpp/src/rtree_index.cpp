@@ -71,6 +71,35 @@ BoundingBox computeEntriesMBR(const std::vector<RTreeEntry>& entries) {
     return combined;
 }
 
+bool pointInsideOrOnBox(const std::vector<float>& query, const BoundingBox& box) {
+    if (query.size() != box.dimensions()) {
+        return false;
+    }
+
+    for (std::size_t i = 0; i < query.size(); ++i) {
+        if (query[i] < box.lower_bounds[i] || query[i] > box.upper_bounds[i]) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool pointEqualsDegenerateBox(const std::vector<float>& query, const BoundingBox& box) {
+    if (query.size() != box.dimensions()) {
+        return false;
+    }
+
+    for (std::size_t i = 0; i < query.size(); ++i) {
+        if (box.lower_bounds[i] != box.upper_bounds[i]) {
+            return false;
+        }
+        if (query[i] != box.lower_bounds[i]) {
+            return false;
+        }
+    }
+    return true;
+}
+
 } // namespace
 
 RTreeIndex::RTreeIndex(BufferPoolManager* buffer_pool_manager, uint16_t dimensions)
@@ -265,6 +294,39 @@ std::vector<std::pair<float, uint64_t>> RTreeIndex::searchKNN(
     }
     std::reverse(output.begin(), output.end());
     return output;
+}
+
+std::vector<uint64_t> RTreeIndex::searchExactPoint(const std::vector<float>& query) const {
+    if (query.size() != dimensions_) {
+        throw std::invalid_argument("Query vector dimensions do not match index dimensions");
+    }
+
+    std::vector<uint64_t> matches;
+    std::vector<uint32_t> stack;
+    stack.push_back(root_page_id_);
+
+    while (!stack.empty()) {
+        const uint32_t page_id = stack.back();
+        stack.pop_back();
+
+        RTreeNodePage node = loadNode(page_id);
+        if (node.isLeaf()) {
+            for (const RTreeEntry& entry : node.getEntries()) {
+                if (pointEqualsDegenerateBox(query, entry.mbr)) {
+                    matches.push_back(entry.value);
+                }
+            }
+            continue;
+        }
+
+        for (const RTreeEntry& entry : node.getEntries()) {
+            if (pointInsideOrOnBox(query, entry.mbr)) {
+                stack.push_back(static_cast<uint32_t>(entry.value));
+            }
+        }
+    }
+
+    return matches;
 }
 
 RTreeNodePage RTreeIndex::loadNode(uint32_t page_id) const {

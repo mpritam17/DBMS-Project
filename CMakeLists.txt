@@ -83,6 +83,14 @@ target_link_libraries(rtree_knn_test
     PRIVATE storage_manager
 )
 
+add_executable(rtree_point_test
+    cpp/tests/rtree_point_test.cpp
+)
+
+target_link_libraries(rtree_point_test
+    PRIVATE storage_manager
+)
+
 add_executable(rtree_metadata_test
     cpp/tests/rtree_metadata_test.cpp
 )

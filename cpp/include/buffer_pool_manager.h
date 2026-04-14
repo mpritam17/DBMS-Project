@@ -9,6 +9,7 @@
 #include <list>
 #include <mutex>
 #include <memory>
+#include <atomic>
 
 class BufferPoolManager {
 public:
@@ -17,6 +18,13 @@ public:
 
     // Fetch the requested page from the buffer pool.
     Page* fetchPage(uint32_t page_id);
+
+    // Buffer-pool access statistics.
+    uint64_t getFetchCount() const;
+    uint64_t getHitCount() const;
+    uint64_t getMissCount() const;
+    double getHitRate() const;
+    void resetStats();
 
     // Unpin the target page from the buffer pool.
     bool unpinPage(uint32_t page_id, bool is_dirty);
@@ -47,4 +55,9 @@ private:
     std::list<uint32_t> free_list_;
     
     std::mutex latch_;
+
+    // Access counters for cache hit-rate reporting.
+    std::atomic<uint64_t> fetch_count_{0};
+    std::atomic<uint64_t> hit_count_{0};
+    std::atomic<uint64_t> miss_count_{0};
 };

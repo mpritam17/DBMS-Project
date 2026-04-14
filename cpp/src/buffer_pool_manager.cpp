@@ -10,7 +10,8 @@
 // 3. LRU-2 eviction: Two-queue design prevents sequential scans from evicting hot pages
 
 BufferPoolManager::BufferPoolManager(size_t pool_size, StorageManager* storage_manager)
-    : pool_size_(pool_size), disk_manager_(storage_manager) {
+    : pool_size_(pool_size), disk_manager_(storage_manager),
+      fetch_count_(0), hit_count_(0), miss_count_(0) {
     pages_ = std::make_unique<Page[]>(pool_size_);
     replacer_ = std::make_unique<LRUReplacer>(pool_size);
     for (size_t i = 0; i < pool_size_; i++) {
@@ -32,9 +33,12 @@ bool BufferPoolManager::findVictim(uint32_t* frame_id) {
 }
 
 Page* BufferPoolManager::fetchPage(uint32_t page_id) {
+    fetch_count_.fetch_add(1, std::memory_order_relaxed);
+
     latch_.lock();
     auto it = page_table_.find(page_id);
     if (it != page_table_.end()) {
+        hit_count_.fetch_add(1, std::memory_order_relaxed);
         uint32_t frame_id = it->second;
         Page* page = &pages_[frame_id];
         page->pin_count_++;
@@ -42,6 +46,8 @@ Page* BufferPoolManager::fetchPage(uint32_t page_id) {
         latch_.unlock();
         return page;
     }
+
+    miss_count_.fetch_add(1, std::memory_order_relaxed);
     
     uint32_t frame_id;
     if (!findVictim(&frame_id)) {
@@ -76,6 +82,32 @@ Page* BufferPoolManager::fetchPage(uint32_t page_id) {
     page->WUnlock();
     
     return page;
+}
+
+uint64_t BufferPoolManager::getFetchCount() const {
+    return fetch_count_.load(std::memory_order_relaxed);
+}
+
+uint64_t BufferPoolManager::getHitCount() const {
+    return hit_count_.load(std::memory_order_relaxed);
+}
+
+uint64_t BufferPoolManager::getMissCount() const {
+    return miss_count_.load(std::memory_order_relaxed);
+}
+
+double BufferPoolManager::getHitRate() const {
+    const uint64_t fetches = getFetchCount();
+    if (fetches == 0) {
+        return 0.0;
+    }
+    return static_cast<double>(getHitCount()) / static_cast<double>(fetches);
+}
+
+void BufferPoolManager::resetStats() {
+    fetch_count_.store(0, std::memory_order_relaxed);
+    hit_count_.store(0, std::memory_order_relaxed);
+    miss_count_.store(0, std::memory_order_relaxed);
 }
 
 bool BufferPoolManager::unpinPage(uint32_t page_id, bool is_dirty) {
