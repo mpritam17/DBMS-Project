@@ -5,6 +5,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -40,8 +41,9 @@ private:
     uint32_t root_page_id_;
     std::size_t height_;
     uint32_t meta_page_id_;
+    mutable std::unordered_map<uint32_t, RTreeNodePage> node_cache_;
 
-    RTreeNodePage loadNode(uint32_t page_id) const;
+    const RTreeNodePage& loadNode(uint32_t page_id) const;
     void writeNode(const RTreeNodePage& node) const;
     RTreeNodePage allocateNode(bool is_leaf) const;
     void writeMetadata() const;

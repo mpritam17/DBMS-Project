@@ -250,12 +250,14 @@ std::vector<std::pair<float, uint64_t>> RTreeIndex::searchKNN(
         auto [min_dist_sq, page_id] = pq.top();
         pq.pop();
 
-        // Prune: this subtree cannot improve on our worst accepted distance.
+        // Global stop: pq is a min-heap, so if the best remaining lower bound
+        // cannot beat our current worst top-k result, all remaining items are
+        // guaranteed non-improving.
         if (results.size() >= k && min_dist_sq >= results.top().first) {
-            continue;
+            break;
         }
 
-        RTreeNodePage node = loadNode(page_id);
+        const RTreeNodePage& node = loadNode(page_id);
         const uint16_t entry_count = node.getEntryCount();
 
         if (node.isLeaf()) {
@@ -297,7 +299,12 @@ std::vector<std::pair<float, uint64_t>> RTreeIndex::searchKNN(
     return output;
 }
 
-RTreeNodePage RTreeIndex::loadNode(uint32_t page_id) const {
+const RTreeNodePage& RTreeIndex::loadNode(uint32_t page_id) const {
+    const auto cached = node_cache_.find(page_id);
+    if (cached != node_cache_.end()) {
+        return cached->second;
+    }
+
     Page* page = buffer_pool_manager_->fetchPage(page_id);
     if (page == nullptr) {
         throw std::runtime_error("Failed to fetch R-tree node page");
@@ -307,7 +314,12 @@ RTreeNodePage RTreeIndex::loadNode(uint32_t page_id) const {
     std::vector<uint8_t> raw(page->getData(), page->getData() + PageLayout::kPageSize);
     page->RUnlock();
     buffer_pool_manager_->unpinPage(page_id, false);
-    return RTreeNodePage(raw);
+
+    auto [it, inserted] = node_cache_.emplace(page_id, RTreeNodePage(raw));
+    if (!inserted) {
+        it->second = RTreeNodePage(raw);
+    }
+    return it->second;
 }
 
 void RTreeIndex::writeNode(const RTreeNodePage& node) const {
@@ -320,6 +332,7 @@ void RTreeIndex::writeNode(const RTreeNodePage& node) const {
     std::memcpy(page->getData(), node.getRawData().data(), PageLayout::kPageSize);
     page->WUnlock();
     buffer_pool_manager_->unpinPage(node.getPageId(), true);
+    node_cache_.clear();
 }
 
 RTreeNodePage RTreeIndex::allocateNode(bool is_leaf) const {
@@ -334,6 +347,7 @@ RTreeNodePage RTreeIndex::allocateNode(bool is_leaf) const {
     std::memcpy(page->getData(), node.getRawData().data(), PageLayout::kPageSize);
     page->WUnlock();
     buffer_pool_manager_->unpinPage(page_id, true);
+    node_cache_.clear();
     return node;
 }
 

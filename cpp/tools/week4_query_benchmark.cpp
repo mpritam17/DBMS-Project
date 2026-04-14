@@ -21,6 +21,7 @@
 namespace {
 
 constexpr uint32_t kSlottedPageMagic = 0x50414745;  // "PAGE"
+constexpr uint32_t kRTreeMetaMagic = 0x52544958;    // 'RTIX'
 
 struct StoredVector {
     uint64_t id;
@@ -204,6 +205,46 @@ bool parseVecSelector(const std::string& selector, std::vector<float>& out_vec) 
     return true;
 }
 
+bool isReusableTempIndex(const std::string& index_db_file, uint16_t expected_dims) {
+    if (!std::filesystem::exists(index_db_file)) {
+        return false;
+    }
+
+    try {
+        StorageManager storage;
+        storage.open(index_db_file);
+        if (storage.pageCount() == 0) {
+            return false;
+        }
+
+        const std::vector<uint8_t> page0 = storage.readPage(0);
+        if (page0.size() < PageLayout::kHeaderSize + 14) {
+            return false;
+        }
+
+        const PageHeader* ph = reinterpret_cast<const PageHeader*>(page0.data());
+        if (ph->magic != RTREE_PAGE_MAGIC) {
+            return false;
+        }
+
+        uint32_t meta_magic = 0;
+        std::memcpy(&meta_magic, page0.data() + sizeof(PageHeader), sizeof(uint32_t));
+        if (meta_magic != kRTreeMetaMagic) {
+            return false;
+        }
+
+        uint16_t meta_dims = 0;
+        std::memcpy(
+            &meta_dims,
+            page0.data() + sizeof(PageHeader) + (3 * sizeof(uint32_t)),
+            sizeof(uint16_t));
+
+        return meta_dims == expected_dims;
+    } catch (...) {
+        return false;
+    }
+}
+
 QueryMetrics benchmarkSingleQueryRaw(
     const RTreeIndex& index,
     const std::vector<StoredVector>& unique_vectors,
@@ -382,7 +423,15 @@ int main(int argc, char** argv) {
         // Build the R-tree in a separate temp DB to avoid mixing index pages
         // with embedding slotted pages in the source file. Re-use if exists!
         const std::string index_db_file = db_file + ".rtree_tmp.db";
-        bool build_index = !std::filesystem::exists(index_db_file);
+        bool build_index = true;
+        if (std::filesystem::exists(index_db_file)) {
+            if (isReusableTempIndex(index_db_file, dims)) {
+                build_index = false;
+            } else {
+                std::cout << "Existing temp R-tree index is stale/corrupt for this dataset; rebuilding.\n";
+                std::filesystem::remove(index_db_file);
+            }
+        }
         
         StorageManager index_storage;
         index_storage.open(index_db_file);

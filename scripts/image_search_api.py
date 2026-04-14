@@ -297,8 +297,8 @@ def main():
     parser.add_argument("--pca-model", default="data/pca_model.npz", help="Path to PCA model .npz file (default: data/pca_model.npz)")
     parser.add_argument("--no-pca", action="store_true", help="Disable PCA even if --pca-model exists")
     parser.add_argument("--image-dir", default=None, help="Directory containing source images")
-    parser.add_argument("--embedding-dims", type=int, default=128,
-                        help="Embedding dimensions before PCA (default: 128)")
+    parser.add_argument("--embedding-dims", type=int, default=None,
+                        help="Embedding dimensions before PCA (default: infer from PCA input dims if PCA is enabled, otherwise 128)")
     args = parser.parse_args()
     
     # Setup device
@@ -312,13 +312,6 @@ def main():
     backbone.fc = torch.nn.Identity()
     backbone.eval().to(device)
     _state["backbone"] = backbone
-    
-    # Setup projector
-    torch.manual_seed(42)
-    projector = torch.nn.Linear(512, args.embedding_dims, bias=False).to(device)
-    torch.nn.init.orthogonal_(projector.weight)
-    projector.eval()
-    _state["projector"] = projector
     
     # Setup transform
     _state["transform"] = transforms.Compose([
@@ -338,6 +331,24 @@ def main():
             print(f"Warning: PCA model not found at {pca_path}, continuing without PCA")
     elif args.no_pca:
         print("PCA disabled via --no-pca")
+
+    # Resolve projector output dimensions.
+    projector_dims = args.embedding_dims
+    if projector_dims is None:
+        if _state["pca"] is not None:
+            projector_dims = int(_state["pca"]["components"].shape[1])
+            print(f"Inferred embedding dims from PCA input: {projector_dims}")
+        else:
+            projector_dims = 128
+    if projector_dims <= 0:
+        raise SystemExit("--embedding-dims must be >= 1")
+
+    # Setup projector
+    torch.manual_seed(42)
+    projector = torch.nn.Linear(512, projector_dims, bias=False).to(device)
+    torch.nn.init.orthogonal_(projector.weight)
+    projector.eval()
+    _state["projector"] = projector
     
     # Load vectors
     vec_path = Path(args.vec_file)
@@ -350,17 +361,17 @@ def main():
 
     # Validate dimensional alignment at startup to avoid runtime 500s.
     if _state["pca"] is None:
-        if args.embedding_dims != dims:
+        if projector_dims != dims:
             raise SystemExit(
-                f"Dimension mismatch at startup: query pipeline outputs {args.embedding_dims}D "
+                f"Dimension mismatch at startup: query pipeline outputs {projector_dims}D "
                 f"but index has {dims}D. Set --embedding-dims {dims}, provide --pca-model, or remove --no-pca."
             )
     else:
         pca_input_dims = int(_state["pca"]["components"].shape[1])
         pca_output_dims = int(_state["pca"]["components"].shape[0])
-        if args.embedding_dims != pca_input_dims:
+        if projector_dims != pca_input_dims:
             raise SystemExit(
-                f"PCA model expects {pca_input_dims}D input, but --embedding-dims is {args.embedding_dims}."
+                f"PCA model expects {pca_input_dims}D input, but --embedding-dims is {projector_dims}."
             )
         if pca_output_dims != dims:
             raise SystemExit(

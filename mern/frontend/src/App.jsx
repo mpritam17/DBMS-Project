@@ -296,6 +296,21 @@ function QueryBenchmarkTab() {
 
   const metrics = payload?.data?.metrics || {};
   const rows = payload?.data?.results || [];
+  const rtreeUs = Number(metrics.rtreeUs);
+  const bruteUs = Number(metrics.bruteUs);
+  const hasLatencyComparison = Number.isFinite(rtreeUs) && Number.isFinite(bruteUs) && rtreeUs > 0 && bruteUs > 0;
+  const winner = !hasLatencyComparison
+    ? "N/A"
+    : rtreeUs < bruteUs
+      ? "R-tree"
+      : bruteUs < rtreeUs
+        ? "Brute-force"
+        : "Tie";
+  const fasterUs = hasLatencyComparison ? Math.min(rtreeUs, bruteUs) : 0;
+  const slowerUs = hasLatencyComparison ? Math.max(rtreeUs, bruteUs) : 0;
+  const deltaUs = hasLatencyComparison ? Math.abs(rtreeUs - bruteUs) : 0;
+  const speedup = hasLatencyComparison && fasterUs > 0 ? slowerUs / fasterUs : 0;
+  const fasterPct = hasLatencyComparison && slowerUs > 0 ? (deltaUs / slowerUs) * 100 : 0;
 
   return (
     <>
@@ -349,6 +364,22 @@ function QueryBenchmarkTab() {
             <div>
               <strong>Disk writes:</strong> {metrics.diskWrites}
             </div>
+            {hasLatencyComparison && (
+              <>
+                <div>
+                  <strong>Winner:</strong> {winner}
+                </div>
+                <div>
+                  <strong>Speedup:</strong> {speedup.toFixed(2)}x
+                </div>
+                <div>
+                  <strong>Latency delta:</strong> {deltaUs.toFixed(2)} us
+                </div>
+                <div>
+                  <strong>Faster by:</strong> {fasterPct.toFixed(2)}%
+                </div>
+              </>
+            )}
           </div>
           {Number(metrics.vectorsUnique || 0) < 1000 && (
             <p>
@@ -368,18 +399,37 @@ function QueryBenchmarkTab() {
                 <th>Query ID</th>
                 <th>R-tree (us)</th>
                 <th>Brute (us)</th>
+                <th>Delta (us)</th>
+                <th>Winner</th>
                 <th>Recall</th>
               </tr>
             </thead>
             <tbody>
-              {rows.map((row, idx) => (
-                <tr key={`${row.queryId}-${idx}`}>
-                  <td>{row.queryId}</td>
-                  <td>{row.rtreeUs}</td>
-                  <td>{row.bruteUs}</td>
-                  <td>{row.recall}</td>
-                </tr>
-              ))}
+              {rows.map((row, idx) => {
+                const rowRtree = Number(row.rtreeUs);
+                const rowBrute = Number(row.bruteUs);
+                const rowDelta = Number.isFinite(rowRtree) && Number.isFinite(rowBrute)
+                  ? Math.abs(rowRtree - rowBrute)
+                  : null;
+                const rowWinner = Number.isFinite(rowRtree) && Number.isFinite(rowBrute)
+                  ? rowRtree < rowBrute
+                    ? "R-tree"
+                    : rowBrute < rowRtree
+                      ? "Brute-force"
+                      : "Tie"
+                  : "N/A";
+
+                return (
+                  <tr key={`${row.queryId}-${idx}`}>
+                    <td>{row.queryId}</td>
+                    <td>{row.rtreeUs}</td>
+                    <td>{row.bruteUs}</td>
+                    <td>{rowDelta === null ? "N/A" : rowDelta.toFixed(2)}</td>
+                    <td>{rowWinner}</td>
+                    <td>{row.recall}</td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </section>

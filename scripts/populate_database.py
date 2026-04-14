@@ -84,7 +84,7 @@ def download_picsum_images(output_dir: Path, count: int, size: int = 224) -> lis
     return downloaded
 
 
-def download_cifar10_samples(output_dir: Path, count: int) -> list[Path]:
+def download_cifar10_samples(output_dir: Path, count: int, random_seed: int = 42) -> list[Path]:
     """Download CIFAR-10 and save as individual images."""
     try:
         from torchvision import datasets
@@ -113,12 +113,16 @@ def download_cifar10_samples(output_dir: Path, count: int) -> list[Path]:
 
     ds = ConcatCIFAR(ds_train, ds_test)
     
-    count = min(count, len(ds))
+    total = len(ds)
+    count = min(count, total)
     downloaded = []
+
+    rng = random.Random(random_seed)
+    sampled_indices = rng.sample(range(total), count)
     
-    print(f"Saving {count} CIFAR-10 images...")
-    for i in range(count):
-        img, label = ds[i]
+    print(f"Saving {count} random CIFAR-10 images from {total} total...")
+    for i, sample_idx in enumerate(sampled_indices):
+        img, label = ds[sample_idx]
         img_path = output_dir / f"img_{i:04d}.png"
         img.save(img_path)
         downloaded.append(img_path)
@@ -255,12 +259,14 @@ def main():
                         help="Directory to save images")
     parser.add_argument("--vec-output", default="data/sample_vecs.bin",
                         help="Output VEC1 file path")
-    parser.add_argument("--pca-dims", type=int, default=64,
+    parser.add_argument("--pca-dims", type=int, default=12,
                         help="PCA dimensions (default: 12, set to 0 to disable)")
     parser.add_argument("--pca-output", default="data/pca_model.npz",
                         help="Output PCA model file")
     parser.add_argument("--embedding-dims", type=int, default=128,
                         help="Intermediate embedding dimensions (default: 128)")
+    parser.add_argument("--random-seed", type=int, default=42,
+                        help="Random seed for CIFAR-10 sampling (default: 42)")
     parser.add_argument("--skip-download", action="store_true",
                         help="Skip download, only regenerate embeddings from existing images")
     args = parser.parse_args()
@@ -274,7 +280,7 @@ def main():
         if args.source == "picsum":
             image_paths = download_picsum_images(output_dir, args.count)
         else:
-            image_paths = download_cifar10_samples(output_dir, args.count)
+            image_paths = download_cifar10_samples(output_dir, args.count, random_seed=args.random_seed)
         
         if not image_paths:
             print("No images downloaded, exiting.")

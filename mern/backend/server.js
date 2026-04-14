@@ -28,6 +28,9 @@ const DEFAULT_DB_PATH = process.env.DEFAULT_DB_PATH || path.join(repoRoot, "samp
 const BENCHMARK_BIN = process.env.BENCHMARK_BIN || path.join(repoRoot, "build", "week4_query_benchmark");
 const IMAGE_SEARCH_API = process.env.IMAGE_SEARCH_API || "http://127.0.0.1:5001";
 const IMAGE_DIR = process.env.IMAGE_DIR || path.join(repoRoot, "data", "sample_images");
+const VEC_FILE = process.env.VEC_FILE || path.join(repoRoot, "data", "sample_vecs.bin");
+const BENCHMARK_USE_FAIR = process.env.BENCHMARK_USE_FAIR !== "0";
+const BENCHMARK_BPM_PAGES = process.env.BENCHMARK_BPM_PAGES || "auto";
 
 const queryLogSchema = new mongoose.Schema(
   {
@@ -87,8 +90,75 @@ function parseBenchmarkOutput(output) {
   return { metrics, results, neighbors, raw: output };
 }
 
-async function runBenchmark({ dbPath, querySelector, k }) {
+function parseImageIdFromFilename(filename) {
+  const name = String(filename || "").trim();
+  if (!name) return null;
+
+  // img_0001.png, img_12345.jpg
+  let match = name.match(/^img_(\d+)\.(?:png|jpg|jpeg)$/i);
+  if (match) {
+    return Number(match[1]);
+  }
+
+  // 42.png, 42.jpg
+  match = name.match(/^(\d+)\.(?:png|jpg|jpeg)$/i);
+  if (match) {
+    return Number(match[1]);
+  }
+
+  return null;
+}
+
+function readVecByIdFromVec1(vecPath, targetId) {
+  if (!fs.existsSync(vecPath)) {
+    return null;
+  }
+
+  const raw = fs.readFileSync(vecPath);
+  if (raw.length < 24 || raw.toString("ascii", 0, 4) !== "VEC1") {
+    return null;
+  }
+
+  const count = Number(raw.readBigUInt64LE(8));
+  const dims = raw.readUInt32LE(16);
+  const entryBytes = 8 + (dims * 4);
+  let offset = 24;
+
+  for (let i = 0; i < count; i += 1) {
+    if (offset + entryBytes > raw.length) {
+      break;
+    }
+
+    const id = Number(raw.readBigUInt64LE(offset));
+    if (id === targetId) {
+      const values = new Array(dims);
+      const vecOffset = offset + 8;
+      for (let d = 0; d < dims; d += 1) {
+        values[d] = raw.readFloatLE(vecOffset + (d * 4));
+      }
+      return values;
+    }
+
+    offset += entryBytes;
+  }
+
+  return null;
+}
+
+async function runBenchmark({
+  dbPath,
+  querySelector,
+  k,
+  fairMode = BENCHMARK_USE_FAIR,
+  bpmPages = BENCHMARK_BPM_PAGES,
+}) {
   const args = [dbPath, String(querySelector), String(k)];
+  if (fairMode) {
+    args.push("--fair");
+  }
+  if (bpmPages !== undefined && bpmPages !== null && String(bpmPages).trim().length > 0) {
+    args.push("--bpm-pages", String(bpmPages).trim());
+  }
   const timeoutMs = 600000; // 10 minutes timeout for large databases
   const { stdout, stderr } = await execFileAsync(BENCHMARK_BIN, args, { timeout: timeoutMs });
   if (stderr && stderr.trim().length > 0) {
@@ -172,6 +242,17 @@ app.post("/api/query-image", upload.single("image"), async (req, res) => {
     }
     if (!fs.existsSync(dbPath)) {
       return res.status(400).json({ ok: false, error: `Database not found: ${dbPath}` });
+    }
+
+    // Shortcut for dataset images: reuse the exact stored vector by image ID.
+    const originalNameId = parseImageIdFromFilename(req.file.originalname);
+    if (Number.isInteger(originalNameId) && originalNameId >= 0) {
+      const vec = readVecByIdFromVec1(VEC_FILE, originalNameId);
+      if (vec) {
+        const querySelector = `vec:${vec.join(",")}`;
+        const parsed = await runBenchmark({ dbPath, querySelector, k });
+        return res.json({ ok: true, query: { queryId: "image", k, dbPath }, data: parsed });
+      }
     }
 
     // Extract embedding
@@ -272,6 +353,37 @@ app.post("/api/image-search", upload.single("image"), async (req, res) => {
 
     const { dbPath } = req.body;
     const resolvedDbPath = resolveDbPath(dbPath);
+
+    // Shortcut for dataset images: avoid embedding drift by querying the exact
+    // stored vector by image ID when the uploaded file name matches expected IDs.
+    const originalNameId = parseImageIdFromFilename(req.file.originalname);
+    if (Number.isInteger(originalNameId) && originalNameId >= 0) {
+      const vec = readVecByIdFromVec1(VEC_FILE, originalNameId);
+      if (vec) {
+        const querySelector = `vec:${vec.join(",")}`;
+        const startMs = Date.now();
+        const parsed = await runBenchmark({ dbPath: resolvedDbPath, querySelector, k });
+        const endMs = Date.now();
+        return res.json({
+          ok: true,
+          k,
+          results: parsed.neighbors.map((n) => ({
+            id: n.id,
+            distance: n.distance,
+            imageUrl: `/api/images/${n.id}`,
+          })),
+          timing: {
+            imageLoad_ms: 0,
+            embedding_ms: 0,
+            pca_ms: 0,
+            knnSearch_ms: endMs - startMs,
+            total_ms: endMs - startMs,
+          },
+          dims: Number(parsed.metrics.dims || 0),
+          pcaEnabled: true,
+        });
+      }
+    }
 
     // Forward the request to the Python extract API
     const formData = new FormData();
@@ -415,6 +527,8 @@ async function main() {
   app.listen(PORT, () => {
     console.log(`Week4 MERN backend listening on http://localhost:${PORT}`);
     console.log(`Using benchmark binary: ${BENCHMARK_BIN}`);
+    console.log(`Benchmark fair mode: ${BENCHMARK_USE_FAIR ? "on" : "off"}`);
+    console.log(`Benchmark bpm pages: ${BENCHMARK_BPM_PAGES}`);
     console.log(`Default DB path: ${DEFAULT_DB_PATH}`);
     console.log(`Image search API: ${IMAGE_SEARCH_API}`);
     console.log(`Image directory: ${IMAGE_DIR}`);
