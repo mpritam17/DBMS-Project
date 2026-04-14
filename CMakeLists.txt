@@ -19,6 +19,14 @@ target_include_directories(storage_manager
     PUBLIC cpp/include
 )
 
+add_library(kd_tree
+    cpp/src/kd_tree.cpp
+)
+
+target_include_directories(kd_tree
+    PUBLIC cpp/include
+)
+
 add_executable(storage_smoke
     cpp/tests/storage_manager_smoke.cpp
 )
@@ -91,6 +99,14 @@ target_link_libraries(rtree_point_test
     PRIVATE storage_manager
 )
 
+add_executable(kd_tree_test
+    cpp/tests/kd_tree_test.cpp
+)
+
+target_link_libraries(kd_tree_test
+    PRIVATE kd_tree
+)
+
 add_executable(rtree_metadata_test
     cpp/tests/rtree_metadata_test.cpp
 )
@@ -105,5 +121,14 @@ add_executable(week4_query_benchmark
 
 target_link_libraries(week4_query_benchmark
     PRIVATE storage_manager
+)
+
+add_executable(kd_analysis_benchmark
+    cpp/tools/kd_analysis_benchmark.cpp
+)
+
+target_link_libraries(kd_analysis_benchmark
+    PRIVATE storage_manager
+    PRIVATE kd_tree
 )
 

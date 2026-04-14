@@ -10,6 +10,7 @@ Implementation of a page-backed R-Tree for high-dimensional image indexing.
 - R-Tree insertion/split, persisted metadata, reopen support, and KNN search
 - First-class exact-point query path in the R-Tree index
 - Week 4 benchmark tool supporting both KNN and exact-point workloads
+- In-memory KD-tree implementation for analysis benchmarks
 - MERN backend/frontend integration, including image search and exact-point benchmark tab
 
 ## Repository Layout
@@ -49,6 +50,7 @@ cmake --build build
 ./build/rtree_knn_test
 ./build/rtree_point_test
 ./build/rtree_metadata_test
+./build/kd_tree_test
 ```
 
 ## Embedding Export And Bulk Loading
@@ -97,6 +99,31 @@ The benchmark reports:
 - Exact-point latency and exact-match rate (point mode)
 - Storage reads/writes
 - Buffer pool hit-rate stats
+
+## KD-Tree Analysis Benchmark
+
+Build and run:
+
+```bash
+cmake -S . -B build
+cmake --build build
+```
+
+Run comparative analysis (R-tree vs KD-tree vs brute-force):
+
+```bash
+./build/kd_analysis_benchmark sample.db 0 10
+./build/kd_analysis_benchmark sample.db all 10 kd_analysis_all.csv
+./build/kd_analysis_benchmark sample.db all:200 10 kd_analysis_sample.csv
+./build/kd_analysis_benchmark sample.db vec:0.1,0.2,0.3,... 10
+```
+
+The analysis benchmark reports:
+- R-tree, KD-tree, and brute-force latency
+- Recall@k for both R-tree and KD-tree against brute-force truth
+- Storage I/O and buffer-pool hit-rate counters from the R-tree path
+
+This benchmark is additive and does not change existing week4 query API behavior.
 
 ## SQLite Vs R-Tree Comparison
 
