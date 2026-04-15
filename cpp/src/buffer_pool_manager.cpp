@@ -33,8 +33,10 @@ bool BufferPoolManager::findVictim(uint32_t* frame_id) {
 
 Page* BufferPoolManager::fetchPage(uint32_t page_id) {
     latch_.lock();
+    fetch_requests_.fetch_add(1, std::memory_order_relaxed);
     auto it = page_table_.find(page_id);
     if (it != page_table_.end()) {
+        fetch_hits_.fetch_add(1, std::memory_order_relaxed);
         uint32_t frame_id = it->second;
         Page* page = &pages_[frame_id];
         page->pin_count_++;
@@ -42,6 +44,7 @@ Page* BufferPoolManager::fetchPage(uint32_t page_id) {
         latch_.unlock();
         return page;
     }
+    fetch_misses_.fetch_add(1, std::memory_order_relaxed);
     
     uint32_t frame_id;
     if (!findVictim(&frame_id)) {
@@ -162,4 +165,31 @@ void BufferPoolManager::flushAllPages() {
         page->WUnlock();
     }
     disk_manager_->flush();
+}
+
+void BufferPoolManager::resetStats() {
+    fetch_requests_.store(0, std::memory_order_relaxed);
+    fetch_hits_.store(0, std::memory_order_relaxed);
+    fetch_misses_.store(0, std::memory_order_relaxed);
+}
+
+uint64_t BufferPoolManager::getFetchRequests() const {
+    return fetch_requests_.load(std::memory_order_relaxed);
+}
+
+uint64_t BufferPoolManager::getFetchHits() const {
+    return fetch_hits_.load(std::memory_order_relaxed);
+}
+
+uint64_t BufferPoolManager::getFetchMisses() const {
+    return fetch_misses_.load(std::memory_order_relaxed);
+}
+
+double BufferPoolManager::getHitRate() const {
+    const uint64_t requests = getFetchRequests();
+    if (requests == 0) {
+        return 0.0;
+    }
+    const uint64_t hits = getFetchHits();
+    return static_cast<double>(hits) / static_cast<double>(requests);
 }

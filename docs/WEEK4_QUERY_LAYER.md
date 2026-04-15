@@ -11,14 +11,14 @@ This milestone delivers an end-to-end query layer that connects:
 - Source file: `cpp/tools/week4_query_benchmark.cpp`
 - Build target added in `CMakeLists.txt`
 
-The tool reads vectors from the on-disk embedding store (`sample.db`), builds an R-tree index through `BufferPoolManager`, executes KNN for a selected query vector, and compares the result with a brute-force scanner.
+The tool reads vectors from the on-disk embedding store (`sample.db`), reuses/builds a companion R-tree index through `BufferPoolManager`, executes KNN for a selected query vector, and compares the result with KD-tree and brute-force baselines.
 
 ## Inputs
 
 Usage:
 
 ```bash
-./build/week4_query_benchmark <db_file> <query_id|all|all:N> <k> [csv_output_path]
+./build/week4_query_benchmark <db_file> <query_id|all|all:N|vec:x,y,...> <k> [csv_output_path] [--fair] [--point-only] [--bpm-pages N|auto]
 ```
 
 Example:
@@ -41,12 +41,16 @@ Arguments:
 The tool prints:
 
 - R-tree KNN latency (microseconds)
+- KD-tree latency and build time (microseconds)
 - Brute-force latency (microseconds)
+- R-tree point-search latency and hit metrics
 - Recall@k (overlap between R-tree result ids and brute-force ids)
 - Disk I/O counters (`StorageManager::disk_reads`, `StorageManager::disk_writes`)
 - R-tree metadata page id
 
 In `all` mode, the tool reports average latency/recall across all query vectors and can export per-query rows to CSV.
+
+In `--point-only` mode, the benchmark skips KD and brute paths and reports point-search feedback only (useful for image-query exact-match checks).
 
 ## SQLite Baseline Comparison
 
@@ -65,9 +69,24 @@ The script runs `week4_query_benchmark`, builds a temporary SQLite table with th
 
 ## Notes
 
-- The current benchmark rebuilds the R-tree each run for deterministic and simple measurement.
-- The embedding store is treated as source-of-truth for vectors, then the query layer indexes those vectors.
+- The embedding store is treated as source-of-truth for vectors; index pages are persisted separately in `<db>.rtree_tmp.db`.
+- If the companion index is stale/corrupt for the current dimensions, it is rebuilt and then reused on later runs.
 - Recall should stay high as data and tree balancing improve.
+
+## Index Persistence Design
+
+Current layout:
+
+- `sample.db`: embedding store pages only
+- `sample.db.rtree_tmp.db`: R-tree index pages only
+
+Why this is preferred here:
+
+- Keeps data and index page formats isolated and easier to debug.
+- Allows deleting/rebuilding only the index file without touching vector data.
+- Reduces risk while iterating on index internals.
+
+An embedded-single-file layout can be better for strict one-file deployment and stronger transactional coupling, but it requires more complex metadata and recovery machinery.
 
 ## MERN Integration Layer
 
@@ -107,7 +126,7 @@ curl -X POST http://localhost:5000/api/query \
   -d '{"queryId":0,"k":10,"dbPath":"/home/quantumec/Documents/DBMS_term_project/sample.db"}'
 ```
 
-The backend delegates search execution to `./build/week4_query_benchmark` and returns parsed metrics/rows. When `MONGODB_URI` is set, query logs are persisted in MongoDB.
+The backend delegates benchmark endpoints to `./build/week4_query_benchmark` and returns parsed metrics/rows. For the image-search endpoint, backend now uses R-tree KNN neighbors from the benchmark output and still reports R-tree point-search diagnostics.
 
 ## Lightweight Python API (Alternative)
 

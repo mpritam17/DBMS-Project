@@ -30,6 +30,8 @@ Endpoints:
 
 - `GET /api/health`
 - `POST /api/query`
+- `POST /api/image-search` (image similarity: R-tree KNN + point-search diagnostics)
+- `POST /api/incremental-insert` (multipart image upload, not raw vector)
 - `GET /api/query-logs` (returns empty when MongoDB is not connected)
 
 Sample payload:
@@ -64,4 +66,6 @@ Vite proxies `/api` to `http://localhost:5000`.
 ## Notes
 
 - The backend executes `build/week4_query_benchmark` for each query.
+- Image similarity returns R-tree KNN results from `build/week4_query_benchmark` and includes point-search diagnostics.
+- R-tree pages persist in a companion index DB file (`<db>.rtree_tmp.db`) separate from the embedding store file.
 - MongoDB is optional. If `MONGODB_URI` is unset, backend still works and skips persistence.

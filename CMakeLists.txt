@@ -99,3 +99,11 @@ target_link_libraries(week4_query_benchmark
     PRIVATE storage_manager
 )
 
+add_executable(incremental_insert
+    cpp/tools/incremental_insert.cpp
+)
+
+target_link_libraries(incremental_insert
+    PRIVATE storage_manager
+)
+

@@ -9,6 +9,7 @@
 #include <list>
 #include <mutex>
 #include <memory>
+#include <atomic>
 
 class BufferPoolManager {
 public:
@@ -30,6 +31,13 @@ public:
     // Flushes all the pages in the buffer pool to disk.
     void flushAllPages();
 
+    // Buffer-pool fetch statistics used by benchmarks.
+    void resetStats();
+    uint64_t getFetchRequests() const;
+    uint64_t getFetchHits() const;
+    uint64_t getFetchMisses() const;
+    double getHitRate() const;
+
 protected:
     // Find a free frame. Try free list first, then replacer.
     inline bool findVictim(uint32_t* frame_id);
@@ -45,6 +53,10 @@ private:
     
     // List of free frames that don't have any pages on them
     std::list<uint32_t> free_list_;
+
+    std::atomic<uint64_t> fetch_requests_{0};
+    std::atomic<uint64_t> fetch_hits_{0};
+    std::atomic<uint64_t> fetch_misses_{0};
     
     std::mutex latch_;
 };

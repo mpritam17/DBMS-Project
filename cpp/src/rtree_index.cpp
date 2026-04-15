@@ -76,6 +76,35 @@ double minDistSqToBox(const std::vector<float>& query, const float* lower, const
     return dist_sq;
 }
 
+bool pointInsideBox(const std::vector<float>& point, const float* lower, const float* upper, std::size_t dims) {
+    constexpr double kPointEpsilon = 1e-6;
+    for (std::size_t i = 0; i < dims; ++i) {
+        const double q = static_cast<double>(point[i]);
+        const double lo = static_cast<double>(lower[i]);
+        const double hi = static_cast<double>(upper[i]);
+        if (q < lo - kPointEpsilon || q > hi + kPointEpsilon) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool pointEqualsEntryPoint(const std::vector<float>& point, const float* lower, const float* upper, std::size_t dims) {
+    constexpr double kPointEpsilon = 1e-6;
+    for (std::size_t i = 0; i < dims; ++i) {
+        const double q = static_cast<double>(point[i]);
+        const double lo = static_cast<double>(lower[i]);
+        const double hi = static_cast<double>(upper[i]);
+        if (std::abs(hi - lo) > kPointEpsilon) {
+            return false;
+        }
+        if (std::abs(q - lo) > kPointEpsilon) {
+            return false;
+        }
+    }
+    return true;
+}
+
 BoundingBox computeEntriesMBR(const std::vector<RTreeEntry>& entries) {
     if (entries.empty()) {
         throw std::runtime_error("Cannot compute MBR of empty entry set");
@@ -297,6 +326,61 @@ std::vector<std::pair<float, uint64_t>> RTreeIndex::searchKNN(
     }
     std::reverse(output.begin(), output.end());
     return output;
+}
+
+std::vector<uint64_t> RTreeIndex::searchPoint(
+        const std::vector<float>& point,
+        PointSearchMetrics* metrics) const {
+    if (point.size() != dimensions_) {
+        throw std::invalid_argument("Point dimensions do not match index dimensions");
+    }
+
+    PointSearchMetrics local_metrics{};
+    std::vector<uint64_t> matches;
+    std::vector<uint32_t> stack;
+    stack.push_back(root_page_id_);
+
+    while (!stack.empty()) {
+        const uint32_t page_id = stack.back();
+        stack.pop_back();
+
+        ++local_metrics.nodes_visited;
+        const RTreeNodePage& node = loadNode(page_id);
+        const uint16_t entry_count = node.getEntryCount();
+
+        if (node.isLeaf()) {
+            for (uint16_t i = 0; i < entry_count; ++i) {
+                const float* lower = nullptr;
+                const float* upper = nullptr;
+                uint64_t value = 0;
+                node.getEntryView(i, lower, upper, value);
+                ++local_metrics.entries_examined;
+
+                if (pointEqualsEntryPoint(point, lower, upper, point.size())) {
+                    matches.push_back(value);
+                }
+            }
+            continue;
+        }
+
+        for (uint16_t i = 0; i < entry_count; ++i) {
+            const float* lower = nullptr;
+            const float* upper = nullptr;
+            uint64_t value = 0;
+            node.getEntryView(i, lower, upper, value);
+            ++local_metrics.entries_examined;
+
+            if (pointInsideBox(point, lower, upper, point.size())) {
+                stack.push_back(static_cast<uint32_t>(value));
+                ++local_metrics.branches_followed;
+            }
+        }
+    }
+
+    if (metrics != nullptr) {
+        *metrics = local_metrics;
+    }
+    return matches;
 }
 
 const RTreeNodePage& RTreeIndex::loadNode(uint32_t page_id) const {

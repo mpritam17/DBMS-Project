@@ -11,6 +11,12 @@
 
 class RTreeIndex {
 public:
+    struct PointSearchMetrics {
+        std::size_t nodes_visited = 0;
+        std::size_t entries_examined = 0;
+        std::size_t branches_followed = 0;
+    };
+
     // Create a brand-new index. Allocates a metadata page as the first page.
     RTreeIndex(BufferPoolManager* buffer_pool_manager, uint16_t dimensions);
 
@@ -23,6 +29,11 @@ public:
     // Returns up to k (distance, value) pairs sorted nearest-first.
     std::vector<std::pair<float, uint64_t>> searchKNN(
         const std::vector<float>& query, std::size_t k) const;
+
+    // Returns exact matches whose leaf point coordinates equal the query point.
+    std::vector<uint64_t> searchPoint(
+        const std::vector<float>& point,
+        PointSearchMetrics* metrics = nullptr) const;
 
     uint32_t getRootPageId() const;
     uint32_t getMetaPageId() const;

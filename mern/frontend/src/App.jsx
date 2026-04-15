@@ -168,8 +168,14 @@ function ImageSearchTab() {
                   <div className="value">{results.timing.pca_ms?.toFixed(2)} ms</div>
                 </div>
               )}
+              {results.timing.pointSearch_ms !== undefined && (
+                <div className="timing-item">
+                  <div className="label">R-tree Point Search</div>
+                  <div className="value">{results.timing.pointSearch_ms?.toFixed(2)} ms</div>
+                </div>
+              )}
               <div className="timing-item">
-                <div className="label">KNN Search</div>
+                <div className="label">R-tree KNN</div>
                 <div className="value">{results.timing.knnSearch_ms?.toFixed(2)} ms</div>
               </div>
               <div className="timing-item">
@@ -180,6 +186,24 @@ function ImageSearchTab() {
             <p style={{ marginBottom: 0, color: "#666", fontSize: 13 }}>
               Dimensions: {results.dims} {results.pcaEnabled && "(PCA enabled)"}
             </p>
+            {results.searchDiagnostics && (
+              <div style={{ marginTop: 8, fontSize: 13, color: "#455a64" }}>
+                <p style={{ margin: 0 }}>
+                  {results.searchDiagnostics.pointMatchCount > 0
+                    ? `Exact point match found in R-tree (${results.searchDiagnostics.pointMatchCount}). R-tree KNN fills remaining neighbors.`
+                    : "No exact point match in R-tree. Returning nearest neighbors from R-tree KNN."}
+                </p>
+                <p style={{ margin: "4px 0 0" }}>
+                  Point nodes: {results.searchDiagnostics.pointNodesVisited}, entries: {results.searchDiagnostics.pointEntriesExamined},
+                  method: {results.searchDiagnostics.method}
+                </p>
+                {results.searchDiagnostics.pointSearchError && (
+                  <p style={{ margin: "4px 0 0", color: "#b00020" }}>
+                    Point-search feedback unavailable: {results.searchDiagnostics.pointSearchError}
+                  </p>
+                )}
+              </div>
+            )}
           </section>
 
           <section className="card">
@@ -197,6 +221,12 @@ function ImageSearchTab() {
                   <div className="meta">
                     <strong>#{idx + 1}</strong> ID: {result.id}
                     <br />
+                    {result.source && (
+                      <>
+                        Source: {result.source}
+                        <br />
+                      </>
+                    )}
                     Dist: {result.distance.toFixed(4)}
                   </div>
                 </div>
@@ -214,9 +244,65 @@ function QueryBenchmarkTab() {
   const [imageFile, setImageFile] = useState(null);
   const [k, setK] = useState(10);
   const [dbPath, setDbPath] = useState("");
+  const [insertImageFile, setInsertImageFile] = useState(null);
+  const [insertId, setInsertId] = useState("auto");
+  const [insertLoading, setInsertLoading] = useState(false);
+  const [insertError, setInsertError] = useState("");
+  const [insertPayload, setInsertPayload] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [payload, setPayload] = useState(null);
+
+  const submitInsert = async (event) => {
+    event.preventDefault();
+    setInsertLoading(true);
+    setInsertError("");
+
+    try {
+      if (!insertImageFile) {
+        throw new Error("Please select an image for insertion");
+      }
+
+      const rawId = insertId.trim();
+      let idValue = "auto";
+      if (rawId && rawId.toLowerCase() !== "auto") {
+        const parsed = Number(rawId);
+        if (!Number.isInteger(parsed) || parsed < 0) {
+          throw new Error("ID must be 'auto' or a non-negative integer");
+        }
+        idValue = parsed;
+      }
+
+      const formData = new FormData();
+      formData.append("image", insertImageFile);
+      formData.append("id", String(idValue));
+      if (dbPath.trim().length > 0) {
+        formData.append("dbPath", dbPath.trim());
+      }
+
+      const response = await fetch("/api/incremental-insert", {
+        method: "POST",
+        body: formData,
+      });
+
+      const rawText = await response.text();
+      let data = null;
+      if (rawText.trim().length > 0) {
+        data = JSON.parse(rawText);
+      }
+
+      if (!response.ok || !data?.ok) {
+        throw new Error(data?.error || "Incremental insert failed");
+      }
+
+      setInsertPayload(data);
+    } catch (err) {
+      setInsertPayload(null);
+      setInsertError(err.message || "Incremental insert failed");
+    } finally {
+      setInsertLoading(false);
+    }
+  };
 
   const submit = async (event) => {
     event.preventDefault();
@@ -297,23 +383,91 @@ function QueryBenchmarkTab() {
   const metrics = payload?.data?.metrics || {};
   const rows = payload?.data?.results || [];
   const rtreeUs = Number(metrics.rtreeUs);
+  const kdUs = Number(metrics.kdUs);
   const bruteUs = Number(metrics.bruteUs);
-  const hasLatencyComparison = Number.isFinite(rtreeUs) && Number.isFinite(bruteUs) && rtreeUs > 0 && bruteUs > 0;
-  const winner = !hasLatencyComparison
-    ? "N/A"
-    : rtreeUs < bruteUs
-      ? "R-tree"
-      : bruteUs < rtreeUs
-        ? "Brute-force"
-        : "Tie";
-  const fasterUs = hasLatencyComparison ? Math.min(rtreeUs, bruteUs) : 0;
-  const slowerUs = hasLatencyComparison ? Math.max(rtreeUs, bruteUs) : 0;
-  const deltaUs = hasLatencyComparison ? Math.abs(rtreeUs - bruteUs) : 0;
-  const speedup = hasLatencyComparison && fasterUs > 0 ? slowerUs / fasterUs : 0;
-  const fasterPct = hasLatencyComparison && slowerUs > 0 ? (deltaUs / slowerUs) * 100 : 0;
+  const latencyMethods = [
+    { name: "R-tree", value: rtreeUs },
+    { name: "KD-tree", value: kdUs },
+    { name: "Brute-force", value: bruteUs },
+  ].filter((method) => Number.isFinite(method.value) && method.value > 0);
+  const sortedMethods = [...latencyMethods].sort((left, right) => left.value - right.value);
+  const hasLatencyComparison = sortedMethods.length >= 2;
+  const winner = hasLatencyComparison ? sortedMethods[0].name : "N/A";
+  const runnerUp = hasLatencyComparison ? sortedMethods[1] : null;
+  const deltaUs = hasLatencyComparison ? (runnerUp.value - sortedMethods[0].value) : 0;
+  const speedup = hasLatencyComparison ? (runnerUp.value / sortedMethods[0].value) : 0;
+  const fasterPct = hasLatencyComparison ? ((deltaUs / runnerUp.value) * 100) : 0;
 
   return (
     <>
+      <form className="card" onSubmit={submitInsert}>
+        <h2 style={{ marginTop: 0 }}>Incremental Insert</h2>
+        <p style={{ marginTop: 0, color: "#666" }}>
+          Insert one image into the current DB: the backend extracts the embedding, appends it to the store, updates
+          the persistent R-tree index, and keeps query caches in sync.
+        </p>
+
+        <label>
+          Image File
+          <input
+            type="file"
+            accept="image/*"
+            onChange={(e) => setInsertImageFile(e.target.files?.[0] || null)}
+          />
+        </label>
+
+        <label>
+          Insert ID ("auto" or integer)
+          <input value={insertId} onChange={(e) => setInsertId(e.target.value)} />
+        </label>
+
+        <label>
+          DB Path (shared with query form below)
+          <input value={dbPath} placeholder="(optional) e.g. sample.db" onChange={(e) => setDbPath(e.target.value)} />
+        </label>
+
+        <button type="submit" disabled={insertLoading || !insertImageFile}>
+          {insertLoading ? "Inserting..." : "Insert Image"}
+        </button>
+      </form>
+
+      {insertError && <p className="error">{insertError}</p>}
+
+      {insertPayload && (
+        <section className="card">
+          <h2 style={{ marginTop: 0 }}>Incremental Insert Result</h2>
+          <div className="grid">
+            <div>
+              <strong>DB:</strong> {insertPayload.data?.dbFile || insertPayload.request?.dbPath}
+            </div>
+            <div>
+              <strong>Index DB:</strong> {insertPayload.data?.indexDbFile || "N/A"}
+            </div>
+            <div>
+              <strong>Inserted ID:</strong> {insertPayload.data?.id ?? "N/A"}
+            </div>
+            <div>
+              <strong>Dims:</strong> {insertPayload.data?.dims ?? insertPayload.request?.vectorDims}
+            </div>
+            <div>
+              <strong>Vector source:</strong> {insertPayload.request?.vectorSource || "N/A"}
+            </div>
+            <div>
+              <strong>Total vectors:</strong> {insertPayload.data?.vectorsTotal ?? "N/A"}
+            </div>
+            <div>
+              <strong>Index rebuilt:</strong> {insertPayload.data?.rebuilt ? "yes" : "no"}
+            </div>
+            <div>
+              <strong>Cache sync:</strong> {insertPayload.cacheSync?.updated ? "yes" : "no"}
+            </div>
+            <div>
+              <strong>Image saved:</strong> {insertPayload.imageStoredAs || "N/A"}
+            </div>
+          </div>
+        </section>
+      )}
+
       <form className="card" onSubmit={submit}>
         <label>
           Custom Image Query (overrides Query ID)
@@ -350,16 +504,52 @@ function QueryBenchmarkTab() {
               <strong>R-tree us:</strong> {metrics.rtreeUs}
             </div>
             <div>
+              <strong>KD-tree us:</strong> {metrics.kdUs ?? "N/A"}
+            </div>
+            <div>
               <strong>Brute us:</strong> {metrics.bruteUs}
             </div>
             <div>
               <strong>Recall:</strong> {metrics.recall}
             </div>
             <div>
+              <strong>KD recall:</strong> {metrics.kdRecall ?? "N/A"}
+            </div>
+            <div>
+              <strong>Point search us:</strong> {metrics.pointSearchUs ?? "N/A"}
+            </div>
+            <div>
+              <strong>Point hit rate:</strong> {metrics.pointHitRate ?? "N/A"}
+            </div>
+            <div>
+              <strong>Point matches/query:</strong> {metrics.pointMatchesPerQuery ?? "N/A"}
+            </div>
+            <div>
+              <strong>Point nodes visited:</strong> {metrics.pointNodesVisited ?? "N/A"}
+            </div>
+            <div>
+              <strong>Point entries examined:</strong> {metrics.pointEntriesExamined ?? "N/A"}
+            </div>
+            <div>
               <strong>Dims:</strong> {metrics.dims}
             </div>
             <div>
               <strong>Unique vectors:</strong> {metrics.vectorsUnique}
+            </div>
+            <div>
+              <strong>KD build us:</strong> {metrics.kdBuildUs ?? "N/A"}
+            </div>
+            <div>
+              <strong>BPM fetch requests:</strong> {metrics.bpmFetchRequests ?? "N/A"}
+            </div>
+            <div>
+              <strong>BPM hits:</strong> {metrics.bpmFetchHits ?? "N/A"}
+            </div>
+            <div>
+              <strong>BPM misses:</strong> {metrics.bpmFetchMisses ?? "N/A"}
+            </div>
+            <div>
+              <strong>BPM hit-rate:</strong> {metrics.bpmHitRate ?? "N/A"}
             </div>
             <div>
               <strong>Disk writes:</strong> {metrics.diskWrites}
@@ -398,34 +588,41 @@ function QueryBenchmarkTab() {
               <tr>
                 <th>Query ID</th>
                 <th>R-tree (us)</th>
+                <th>KD-tree (us)</th>
                 <th>Brute (us)</th>
-                <th>Delta (us)</th>
-                <th>Winner</th>
+                <th>Point (us)</th>
+                <th>Point Matches</th>
+                <th>Best Method</th>
+                <th>Delta vs 2nd (us)</th>
+                <th>KD Recall</th>
                 <th>Recall</th>
               </tr>
             </thead>
             <tbody>
               {rows.map((row, idx) => {
                 const rowRtree = Number(row.rtreeUs);
+                const rowKd = Number(row.kdUs);
                 const rowBrute = Number(row.bruteUs);
-                const rowDelta = Number.isFinite(rowRtree) && Number.isFinite(rowBrute)
-                  ? Math.abs(rowRtree - rowBrute)
-                  : null;
-                const rowWinner = Number.isFinite(rowRtree) && Number.isFinite(rowBrute)
-                  ? rowRtree < rowBrute
-                    ? "R-tree"
-                    : rowBrute < rowRtree
-                      ? "Brute-force"
-                      : "Tie"
-                  : "N/A";
+                const rowMethods = [
+                  { name: "R-tree", value: rowRtree },
+                  { name: "KD-tree", value: rowKd },
+                  { name: "Brute-force", value: rowBrute },
+                ].filter((method) => Number.isFinite(method.value) && method.value > 0)
+                 .sort((left, right) => left.value - right.value);
+                const rowWinner = rowMethods.length >= 2 ? rowMethods[0].name : "N/A";
+                const rowDelta = rowMethods.length >= 2 ? (rowMethods[1].value - rowMethods[0].value) : null;
 
                 return (
                   <tr key={`${row.queryId}-${idx}`}>
                     <td>{row.queryId}</td>
                     <td>{row.rtreeUs}</td>
+                    <td>{row.kdUs ?? "N/A"}</td>
                     <td>{row.bruteUs}</td>
-                    <td>{rowDelta === null ? "N/A" : rowDelta.toFixed(2)}</td>
+                    <td>{row.pointUs ?? "N/A"}</td>
+                    <td>{row.pointMatches ?? "N/A"}</td>
                     <td>{rowWinner}</td>
+                    <td>{rowDelta === null ? "N/A" : rowDelta.toFixed(2)}</td>
+                    <td>{row.kdRecall ?? "N/A"}</td>
                     <td>{row.recall}</td>
                   </tr>
                 );

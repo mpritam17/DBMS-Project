@@ -6,11 +6,17 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <iostream>
+#include <limits>
+#include <memory>
+#include <numeric>
+#include <queue>
 #include <stdexcept>
 #include <string>
 #include <tuple>
@@ -31,7 +37,15 @@ struct StoredVector {
 struct QueryMetrics {
     uint64_t query_id;
     long long rtree_us;
+    long long kd_us;
     long long brute_us;
+    long long rtree_point_us;
+    std::size_t point_matches;
+    std::size_t point_nodes_visited;
+    std::size_t point_entries_examined;
+    std::size_t kd_hits;
+    std::size_t kd_denom;
+    double kd_recall;
     std::size_t hits;
     std::size_t denom;
     double recall;
@@ -39,6 +53,7 @@ struct QueryMetrics {
 
 struct BenchmarkOptions {
     bool fair_mode = false;
+    bool point_only = false;
     std::size_t bpm_pages = 2048;
     bool bpm_pages_explicit = false;
 };
@@ -48,7 +63,7 @@ constexpr std::size_t kAutoBpmMinPages = 2048;
 constexpr std::size_t kAutoBpmMaxPages = 8192;
 constexpr std::size_t kAutoBpmHeadroomPages = 128;
 
-float l2Distance(const std::vector<float>& a, const std::vector<float>& b) {
+double l2DistanceSq(const std::vector<float>& a, const std::vector<float>& b) {
     if (a.size() != b.size()) {
         throw std::invalid_argument("L2 distance dimension mismatch");
     }
@@ -57,8 +72,154 @@ float l2Distance(const std::vector<float>& a, const std::vector<float>& b) {
         const double d = static_cast<double>(a[i]) - static_cast<double>(b[i]);
         dist_sq += d * d;
     }
-    return static_cast<float>(std::sqrt(dist_sq));
+    return dist_sq;
 }
+
+float l2Distance(const std::vector<float>& a, const std::vector<float>& b) {
+    return static_cast<float>(std::sqrt(l2DistanceSq(a, b)));
+}
+
+struct KDSearchMetrics {
+    std::size_t nodes_visited = 0;
+    std::size_t far_branch_checks = 0;
+};
+
+class KDTree {
+public:
+    KDTree(const std::vector<StoredVector>& vectors, std::size_t dimensions)
+        : dimensions_(dimensions) {
+        if (dimensions_ == 0) {
+            throw std::invalid_argument("KD-tree requires dimensions >= 1");
+        }
+
+        points_.reserve(vectors.size());
+        for (const auto& vec : vectors) {
+            points_.push_back({vec.id, &vec.values});
+        }
+
+        std::vector<std::size_t> point_indices(points_.size());
+        std::iota(point_indices.begin(), point_indices.end(), 0);
+        nodes_.reserve(points_.size());
+        root_index_ = buildRecursive(point_indices, 0, point_indices.size(), 0);
+    }
+
+    std::vector<std::pair<float, uint64_t>> searchKNN(
+        const std::vector<float>& query,
+        std::size_t k,
+        KDSearchMetrics* metrics = nullptr) const {
+        if (k == 0) {
+            return {};
+        }
+        if (query.size() != dimensions_) {
+            throw std::invalid_argument("KD-tree query dimensions do not match tree dimensions");
+        }
+
+        KDSearchMetrics local_metrics{};
+        using HeapEntry = std::pair<double, uint64_t>;
+        std::priority_queue<HeapEntry> best;
+
+        const std::function<void(int)> dfs = [&](int node_index) {
+            if (node_index < 0) {
+                return;
+            }
+
+            ++local_metrics.nodes_visited;
+            const KDNode& node = nodes_[static_cast<std::size_t>(node_index)];
+
+            const double dist_sq = l2DistanceSq(query, *node.coordinates);
+            if (best.size() < k || dist_sq < best.top().first) {
+                best.push({dist_sq, node.value});
+                if (best.size() > k) {
+                    best.pop();
+                }
+            }
+
+            const double delta = static_cast<double>(query[node.split_axis])
+                               - static_cast<double>((*node.coordinates)[node.split_axis]);
+            const int near_child = delta <= 0.0 ? node.left_child : node.right_child;
+            const int far_child = delta <= 0.0 ? node.right_child : node.left_child;
+
+            dfs(near_child);
+
+            ++local_metrics.far_branch_checks;
+            const double plane_dist_sq = delta * delta;
+            if (far_child >= 0 && (best.size() < k || plane_dist_sq < best.top().first)) {
+                dfs(far_child);
+            }
+        };
+
+        dfs(root_index_);
+
+        if (metrics != nullptr) {
+            *metrics = local_metrics;
+        }
+
+        std::vector<std::pair<float, uint64_t>> result;
+        result.reserve(best.size());
+        while (!best.empty()) {
+            result.push_back({static_cast<float>(std::sqrt(best.top().first)), best.top().second});
+            best.pop();
+        }
+        std::reverse(result.begin(), result.end());
+        return result;
+    }
+
+private:
+    struct KDPointRef {
+        uint64_t value = 0;
+        const std::vector<float>* coordinates = nullptr;
+    };
+
+    struct KDNode {
+        uint64_t value = 0;
+        const std::vector<float>* coordinates = nullptr;
+        std::size_t split_axis = 0;
+        int left_child = -1;
+        int right_child = -1;
+    };
+
+    int buildRecursive(
+        std::vector<std::size_t>& point_indices,
+        std::size_t begin,
+        std::size_t end,
+        std::size_t depth) {
+        if (begin >= end) {
+            return -1;
+        }
+
+        const std::size_t axis = depth % dimensions_;
+        const std::size_t mid = begin + ((end - begin) / 2);
+        std::nth_element(
+            point_indices.begin() + static_cast<std::ptrdiff_t>(begin),
+            point_indices.begin() + static_cast<std::ptrdiff_t>(mid),
+            point_indices.begin() + static_cast<std::ptrdiff_t>(end),
+            [&](std::size_t lhs, std::size_t rhs) {
+                return (*points_[lhs].coordinates)[axis] < (*points_[rhs].coordinates)[axis];
+            });
+
+        const std::size_t point_idx = point_indices[mid];
+        const int node_index = static_cast<int>(nodes_.size());
+        nodes_.push_back({
+            points_[point_idx].value,
+            points_[point_idx].coordinates,
+            axis,
+            -1,
+            -1,
+        });
+
+        nodes_[static_cast<std::size_t>(node_index)].left_child =
+            buildRecursive(point_indices, begin, mid, depth + 1);
+        nodes_[static_cast<std::size_t>(node_index)].right_child =
+            buildRecursive(point_indices, mid + 1, end, depth + 1);
+
+        return node_index;
+    }
+
+    std::size_t dimensions_;
+    std::vector<KDPointRef> points_;
+    std::vector<KDNode> nodes_;
+    int root_index_ = -1;
+};
 
 std::vector<StoredVector> loadVectorsFromEmbeddingStore(StorageManager& storage, uint16_t* out_dims) {
     std::vector<StoredVector> vectors;
@@ -247,35 +408,70 @@ bool isReusableTempIndex(const std::string& index_db_file, uint16_t expected_dim
 
 QueryMetrics benchmarkSingleQueryRaw(
     const RTreeIndex& index,
+    const KDTree& kd_tree,
     const std::vector<StoredVector>& unique_vectors,
     const std::vector<float>& query,
     uint64_t query_id_label,
     std::size_t k,
-    std::vector<std::pair<float, uint64_t>>* out_results = nullptr) {
+    std::vector<std::pair<float, uint64_t>>* out_results = nullptr,
+    std::vector<uint64_t>* out_point_matches = nullptr) {
     const auto rtree_start = std::chrono::high_resolution_clock::now();
     const auto rtree_results = index.searchKNN(query, k);
     const auto rtree_end = std::chrono::high_resolution_clock::now();
+
+    const auto kd_start = std::chrono::high_resolution_clock::now();
+    const auto kd_results = kd_tree.searchKNN(query, k);
+    const auto kd_end = std::chrono::high_resolution_clock::now();
 
     const auto brute_start = std::chrono::high_resolution_clock::now();
     const auto brute_results = bruteForceKNN(unique_vectors, query, k);
     const auto brute_end = std::chrono::high_resolution_clock::now();
 
+    RTreeIndex::PointSearchMetrics point_metrics{};
+    const auto point_start = std::chrono::high_resolution_clock::now();
+    const auto point_matches = index.searchPoint(query, &point_metrics);
+    const auto point_end = std::chrono::high_resolution_clock::now();
+
     const auto rtree_us = std::chrono::duration_cast<std::chrono::microseconds>(rtree_end - rtree_start).count();
+    const auto kd_us = std::chrono::duration_cast<std::chrono::microseconds>(kd_end - kd_start).count();
     const auto brute_us = std::chrono::duration_cast<std::chrono::microseconds>(brute_end - brute_start).count();
+    const auto point_us = std::chrono::duration_cast<std::chrono::microseconds>(point_end - point_start).count();
 
     const std::size_t hits = recallAtK(rtree_results, brute_results);
     const std::size_t denom = std::min(rtree_results.size(), brute_results.size());
     const double recall = denom == 0 ? 0.0 : static_cast<double>(hits) / static_cast<double>(denom);
+    const std::size_t kd_hits = recallAtK(kd_results, brute_results);
+    const std::size_t kd_denom = std::min(kd_results.size(), brute_results.size());
+    const double kd_recall = kd_denom == 0 ? 0.0 : static_cast<double>(kd_hits) / static_cast<double>(kd_denom);
 
     if (out_results) {
         *out_results = rtree_results;
     }
+    if (out_point_matches) {
+        *out_point_matches = point_matches;
+    }
 
-    return {query_id_label, rtree_us, brute_us, hits, denom, recall};
+    return {
+        query_id_label,
+        rtree_us,
+        kd_us,
+        brute_us,
+        point_us,
+        point_matches.size(),
+        point_metrics.nodes_visited,
+        point_metrics.entries_examined,
+        kd_hits,
+        kd_denom,
+        kd_recall,
+        hits,
+        denom,
+        recall,
+    };
 }
 
 QueryMetrics benchmarkSingleQuery(
     const RTreeIndex& index,
+    const KDTree& kd_tree,
     const std::vector<StoredVector>& unique_vectors,
     const std::unordered_map<uint64_t, std::vector<float>>& by_id,
     uint64_t query_id,
@@ -284,7 +480,51 @@ QueryMetrics benchmarkSingleQuery(
     if (query_it == by_id.end()) {
         throw std::runtime_error("query_id not found in embedding store");
     }
-    return benchmarkSingleQueryRaw(index, unique_vectors, query_it->second, query_id, k);
+    return benchmarkSingleQueryRaw(index, kd_tree, unique_vectors, query_it->second, query_id, k);
+}
+
+QueryMetrics benchmarkPointOnlyRaw(
+    const RTreeIndex& index,
+    const std::vector<float>& query,
+    uint64_t query_id_label,
+    std::vector<uint64_t>* out_point_matches = nullptr) {
+    RTreeIndex::PointSearchMetrics point_metrics{};
+    const auto point_start = std::chrono::high_resolution_clock::now();
+    const auto point_matches = index.searchPoint(query, &point_metrics);
+    const auto point_end = std::chrono::high_resolution_clock::now();
+    const auto point_us = std::chrono::duration_cast<std::chrono::microseconds>(point_end - point_start).count();
+
+    if (out_point_matches) {
+        *out_point_matches = point_matches;
+    }
+
+    return {
+        query_id_label,
+        0,
+        0,
+        0,
+        point_us,
+        point_matches.size(),
+        point_metrics.nodes_visited,
+        point_metrics.entries_examined,
+        0,
+        0,
+        0.0,
+        0,
+        0,
+        0.0,
+    };
+}
+
+QueryMetrics benchmarkPointOnlyQuery(
+    const RTreeIndex& index,
+    const std::unordered_map<uint64_t, std::vector<float>>& by_id,
+    uint64_t query_id) {
+    const auto query_it = by_id.find(query_id);
+    if (query_it == by_id.end()) {
+        throw std::runtime_error("query_id not found in embedding store");
+    }
+    return benchmarkPointOnlyRaw(index, query_it->second, query_id);
 }
 
 void writeCsv(const std::string& csv_path, const std::vector<QueryMetrics>& rows) {
@@ -293,11 +533,19 @@ void writeCsv(const std::string& csv_path, const std::vector<QueryMetrics>& rows
         throw std::runtime_error("Failed to open CSV output path: " + csv_path);
     }
 
-    out << "query_id,rtree_us,brute_us,hits,denom,recall\n";
+    out << "query_id,rtree_us,kd_us,brute_us,rtree_point_us,point_matches,point_nodes_visited,point_entries_examined,kd_hits,kd_denom,kd_recall,hits,denom,recall\n";
     for (const auto& row : rows) {
         out << row.query_id << ","
             << row.rtree_us << ","
+            << row.kd_us << ","
             << row.brute_us << ","
+            << row.rtree_point_us << ","
+            << row.point_matches << ","
+            << row.point_nodes_visited << ","
+            << row.point_entries_examined << ","
+            << row.kd_hits << ","
+            << row.kd_denom << ","
+            << row.kd_recall << ","
             << row.hits << ","
             << row.denom << ","
             << row.recall << "\n";
@@ -310,7 +558,7 @@ int main(int argc, char** argv) {
     if (argc < 4) {
         std::cerr << "Usage: " << argv[0]
                   << " <db_file> <query_id|all|all:N|vec:x,y,...> <k>"
-                  << " [csv_output_path] [--fair] [--bpm-pages N|auto]\n";
+                  << " [csv_output_path] [--fair] [--point-only] [--bpm-pages N|auto]\n";
         return 1;
     }
 
@@ -336,6 +584,11 @@ int main(int argc, char** argv) {
         const std::string arg = argv[argi];
         if (arg == "--fair") {
             options.fair_mode = true;
+            ++argi;
+            continue;
+        }
+        if (arg == "--point-only") {
+            options.point_only = true;
             ++argi;
             continue;
         }
@@ -397,6 +650,15 @@ int main(int argc, char** argv) {
         std::sort(unique_vectors.begin(), unique_vectors.end(), [](const StoredVector& a, const StoredVector& b) {
             return a.id < b.id;
         });
+
+        std::unique_ptr<KDTree> kd_tree;
+        long long kd_build_us = 0;
+        if (!options.point_only) {
+            const auto kd_build_start = std::chrono::high_resolution_clock::now();
+            kd_tree = std::make_unique<KDTree>(unique_vectors, dims);
+            const auto kd_build_end = std::chrono::high_resolution_clock::now();
+            kd_build_us = std::chrono::duration_cast<std::chrono::microseconds>(kd_build_end - kd_build_start).count();
+        }
 
         std::vector<uint64_t> query_ids;
         std::size_t all_limit = 0;
@@ -464,49 +726,118 @@ int main(int argc, char** argv) {
 
             // Prime traversal and branch predictor/cache effects before timed run.
             if (is_custom_vec) {
-                (void) index.searchKNN(parsed_vec_query, k);
+                if (!options.point_only) {
+                    (void) index.searchKNN(parsed_vec_query, k);
+                    (void) kd_tree->searchKNN(parsed_vec_query, k);
+                }
+                (void) index.searchPoint(parsed_vec_query);
             } else {
                 for (uint64_t qid : query_ids) {
                     const auto query_it = by_id.find(qid);
                     if (query_it != by_id.end()) {
-                        (void) index.searchKNN(query_it->second, k);
+                        if (!options.point_only) {
+                            (void) index.searchKNN(query_it->second, k);
+                            (void) kd_tree->searchKNN(query_it->second, k);
+                        }
+                        (void) index.searchPoint(query_it->second);
                     }
                 }
             }
         }
 
+        bpm.resetStats();
         StorageManager::disk_reads = 0;
         StorageManager::disk_writes = 0;
 
         std::vector<std::pair<float, uint64_t>> out_results;
+        std::vector<uint64_t> out_point_matches;
         std::vector<QueryMetrics> all_metrics;
         all_metrics.reserve(query_ids.size());
 
-        if (is_custom_vec) {
-            all_metrics.push_back(benchmarkSingleQueryRaw(index, unique_vectors, parsed_vec_query, 999999, k, &out_results));
+        if (options.point_only) {
+            if (is_custom_vec) {
+                all_metrics.push_back(benchmarkPointOnlyRaw(
+                    index,
+                    parsed_vec_query,
+                    999999,
+                    &out_point_matches));
+            } else {
+                for (uint64_t qid : query_ids) {
+                    all_metrics.push_back(benchmarkPointOnlyQuery(index, by_id, qid));
+                }
+            }
         } else {
-            for (uint64_t qid : query_ids) {
-                all_metrics.push_back(benchmarkSingleQuery(index, unique_vectors, by_id, qid, k));
+            if (is_custom_vec) {
+                all_metrics.push_back(benchmarkSingleQueryRaw(
+                    index,
+                    *kd_tree,
+                    unique_vectors,
+                    parsed_vec_query,
+                    999999,
+                    k,
+                    &out_results,
+                    &out_point_matches));
+            } else {
+                for (uint64_t qid : query_ids) {
+                    all_metrics.push_back(benchmarkSingleQuery(index, *kd_tree, unique_vectors, by_id, qid, k));
+                }
             }
         }
 
         long long total_rtree_us = 0;
+        long long total_kd_us = 0;
         long long total_brute_us = 0;
+        long long total_point_us = 0;
+        std::size_t total_point_matches = 0;
+        std::size_t total_point_nodes = 0;
+        std::size_t total_point_entries = 0;
+        std::size_t point_hit_queries = 0;
+        std::size_t total_kd_hits = 0;
+        std::size_t total_kd_denom = 0;
         std::size_t total_hits = 0;
         std::size_t total_denom = 0;
         for (const auto& m : all_metrics) {
             total_rtree_us += m.rtree_us;
+            total_kd_us += m.kd_us;
             total_brute_us += m.brute_us;
+            total_point_us += m.rtree_point_us;
+            total_point_matches += m.point_matches;
+            total_point_nodes += m.point_nodes_visited;
+            total_point_entries += m.point_entries_examined;
+            if (m.point_matches > 0) {
+                ++point_hit_queries;
+            }
+            total_kd_hits += m.kd_hits;
+            total_kd_denom += m.kd_denom;
             total_hits += m.hits;
             total_denom += m.denom;
         }
 
         const double avg_rtree_us = all_metrics.empty() ? 0.0
             : static_cast<double>(total_rtree_us) / static_cast<double>(all_metrics.size());
+        const double avg_kd_us = all_metrics.empty() ? 0.0
+            : static_cast<double>(total_kd_us) / static_cast<double>(all_metrics.size());
         const double avg_brute_us = all_metrics.empty() ? 0.0
             : static_cast<double>(total_brute_us) / static_cast<double>(all_metrics.size());
+        const double avg_point_us = all_metrics.empty() ? 0.0
+            : static_cast<double>(total_point_us) / static_cast<double>(all_metrics.size());
+        const double point_hit_rate = all_metrics.empty() ? 0.0
+            : static_cast<double>(point_hit_queries) / static_cast<double>(all_metrics.size());
+        const double point_matches_per_query = all_metrics.empty() ? 0.0
+            : static_cast<double>(total_point_matches) / static_cast<double>(all_metrics.size());
+        const double avg_point_nodes = all_metrics.empty() ? 0.0
+            : static_cast<double>(total_point_nodes) / static_cast<double>(all_metrics.size());
+        const double avg_point_entries = all_metrics.empty() ? 0.0
+            : static_cast<double>(total_point_entries) / static_cast<double>(all_metrics.size());
+        const double avg_kd_recall = total_kd_denom == 0 ? 0.0
+            : static_cast<double>(total_kd_hits) / static_cast<double>(total_kd_denom);
         const double avg_recall = total_denom == 0 ? 0.0
             : static_cast<double>(total_hits) / static_cast<double>(total_denom);
+
+        const std::uint64_t bpm_fetch_requests = bpm.getFetchRequests();
+        const std::uint64_t bpm_fetch_hits = bpm.getFetchHits();
+        const std::uint64_t bpm_fetch_misses = bpm.getFetchMisses();
+        const double bpm_hit_rate = bpm.getHitRate();
 
         std::cout << "Week 4 Query Benchmark\n";
         std::cout << "  vectors(raw): " << vectors.size() << "\n";
@@ -516,22 +847,43 @@ int main(int argc, char** argv) {
         std::cout << "  queries_run: " << all_metrics.size() << "\n";
         std::cout << "  k: " << k << "\n";
         std::cout << "  fair_mode: " << (options.fair_mode ? "on" : "off") << "\n";
+        std::cout << "  point_only_mode: " << (options.point_only ? "on" : "off") << "\n";
         std::cout << "  bpm_pages: " << options.bpm_pages << "\n";
+        std::cout << "  kd_build_us: " << kd_build_us << "\n";
         std::cout << "\n";
         std::cout << "Average R-tree KNN latency: " << avg_rtree_us << " us\n";
+        std::cout << "Average KD-tree latency: " << avg_kd_us << " us\n";
         std::cout << "Average brute-force latency: " << avg_brute_us << " us\n";
+        std::cout << "Average R-tree point-search latency: " << avg_point_us << " us\n";
+        std::cout << "Point-search hit-rate: " << point_hit_rate << " (" << point_hit_queries
+                  << "/" << all_metrics.size() << ")\n";
+        std::cout << "Point-search matches/query: " << point_matches_per_query << "\n";
+        std::cout << "Point-search avg nodes visited: " << avg_point_nodes << "\n";
+        std::cout << "Point-search avg entries examined: " << avg_point_entries << "\n";
+        std::cout << "Average KD recall@k: " << avg_kd_recall << " ("
+                  << total_kd_hits << "/" << total_kd_denom << ")\n";
         std::cout << "Average recall@k: " << avg_recall << " (" << total_hits << "/" << total_denom << ")\n";
+        std::cout << "Buffer-pool fetch requests: " << bpm_fetch_requests << "\n";
+        std::cout << "Buffer-pool hits: " << bpm_fetch_hits << "\n";
+        std::cout << "Buffer-pool misses: " << bpm_fetch_misses << "\n";
+        std::cout << "Buffer-pool hit-rate: " << bpm_hit_rate
+              << " (" << (bpm_hit_rate * 100.0) << "%)\n";
         std::cout << "Disk I/O counters (StorageManager): reads=" << StorageManager::disk_reads.load()
                   << ", writes=" << StorageManager::disk_writes.load() << "\n";
         std::cout << "RTree metadata page id: " << index.getMetaPageId() << "\n";
 
         const std::size_t print_n = std::min<std::size_t>(5, all_metrics.size());
-        std::cout << "\nFirst " << print_n << " per-query rows (query_id, rtree_us, brute_us, recall):\n";
+        std::cout << "\nFirst " << print_n
+                  << " per-query rows (query_id, rtree_us, kd_us, brute_us, point_us, point_matches, kd_recall, recall):\n";
         for (std::size_t i = 0; i < print_n; ++i) {
             std::cout << "  " << i + 1 << ". "
                       << all_metrics[i].query_id << ", "
                       << all_metrics[i].rtree_us << ", "
+                      << all_metrics[i].kd_us << ", "
                       << all_metrics[i].brute_us << ", "
+                      << all_metrics[i].rtree_point_us << ", "
+                      << all_metrics[i].point_matches << ", "
+                      << all_metrics[i].kd_recall << ", "
                       << all_metrics[i].recall << "\n";
         }
 
@@ -541,9 +893,16 @@ int main(int argc, char** argv) {
         }
 
         if (is_custom_vec) {
-            std::cout << "\nCustom Vector Neighbors:\n";
-            for (const auto& pair : out_results) {
-                std::cout << "{ \"id\": " << pair.second << ", \"distance\": " << pair.first << " }\n";
+            std::cout << "\nCustom Vector Point Matches:\n";
+            for (uint64_t point_id : out_point_matches) {
+                std::cout << "{ \"point_id\": " << point_id << " }\n";
+            }
+
+            if (!options.point_only) {
+                std::cout << "\nCustom Vector Neighbors:\n";
+                for (const auto& pair : out_results) {
+                    std::cout << "{ \"id\": " << pair.second << ", \"distance\": " << pair.first << " }\n";
+                }
             }
         }
 

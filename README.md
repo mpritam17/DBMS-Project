@@ -70,6 +70,44 @@ python scripts/extract_embeddings.py --dataset cifar10 --output data/cifar10_vec
 ./build/bulk_load data/cifar10_vecs.bin sample.db
 ```
 
+## Incremental Insert (CLI And MERN)
+
+For a fast append-only path (without full `populate_database + bulk_load` rebuild), the low-level CLI stays vector-based:
+
+```bash
+./build/incremental_insert sample.db auto vec:0.1,0.2,0.3,...
+```
+
+In the MERN UI/API, incremental insert is image-based: upload an image and the backend extracts the embedding, chooses PCA/raw dimensions to match the DB, appends the vector, and updates index files.
+
+Notes:
+
+- `auto` assigns `max(id)+1` from the current store.
+- You can also provide an explicit ID instead of `auto`.
+- Index persistence is in a companion temp index DB file (`sample.db.rtree_tmp.db`), not embedded into the embedding store file (`sample.db`).
+- If that index is stale/corrupt, the tool rebuilds it once and then continues incrementally.
+
+### Companion Temp Index DB: Why This Design
+
+We intentionally keep vectors and index pages in separate files:
+
+- `sample.db`: source-of-truth embedding store (slotted pages with vector payloads)
+- `sample.db.rtree_tmp.db`: R-tree index pages and metadata
+
+Compared to embedding the R-tree into the same file as vectors, the companion-file approach is generally better for this project because:
+
+- Simpler page-type isolation: embedding pages and index pages never collide, reducing parser/recovery complexity.
+- Safer rebuild path: stale/corrupt index can be dropped/rebuilt without rewriting vector data.
+- Faster iteration: benchmark and UI can reuse the existing temp index across runs while keeping the data file unchanged.
+- Lower risk during development: storage format changes in index logic do not force migration of the embedding store.
+
+When embedding index and vectors into one file can be better:
+
+- You need strict single-file portability and transactional coupling between data and index pages.
+- You are ready to implement stronger metadata/versioning and crash-recovery semantics in one physical file.
+
+For this term-project stage, companion-file persistence is the better tradeoff: cleaner architecture and safer incremental development.
+
 ## Next Milestones
 - Persist index metadata so an R-tree can be reopened from disk by metadata page ID
 - Week 4: end-to-end query layer connecting the KNN index to the embedding store
@@ -87,6 +125,12 @@ cmake --build build
 ```
 
 It reads vectors from the slotted-page embedding store, builds an R-tree query layer through the buffer pool, executes KNN, and compares R-tree latency/recall against brute-force search. The selector `all:N` runs only the first `N` query vectors, which is useful for fast benchmark iterations on larger datasets.
+
+Operational notes:
+
+- The R-tree pages are persisted in `sample.db.rtree_tmp.db` and reused when dimensions match.
+- KD-tree build is process-local in `week4_query_benchmark` (measured via `kd_build_us`).
+- The MERN image-search path uses R-tree KNN results from `week4_query_benchmark` and surfaces point-search diagnostics.
 
 ## SQLite Vs R-Tree Comparison
 

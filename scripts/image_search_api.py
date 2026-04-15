@@ -11,6 +11,7 @@ Endpoints:
 import argparse
 import io
 import os
+import re
 import struct
 import time
 from pathlib import Path
@@ -25,6 +26,10 @@ from torchvision import models, transforms
 app = Flask(__name__)
 CORS(app)
 
+DUP_HASH_SIZE = 16
+DUP_MAX_DISTANCE = 72
+DUP_MIN_GAP = 12
+
 # Global state (initialized in main)
 _state = {
     "backbone": None,
@@ -36,6 +41,7 @@ _state = {
     "dims": 0,
     "image_dir": None,
     "transform": None,
+    "image_hash_index": None,
 }
 
 
@@ -148,6 +154,96 @@ def get_image_path(image_id: int) -> Path | None:
     return None
 
 
+def parse_image_id_from_name(filename: str) -> int | None:
+    """Parse numeric image id from common dataset naming patterns."""
+    stem = Path(filename).stem
+
+    match = re.match(r"^img_(\d+)$", stem)
+    if match:
+        return int(match.group(1))
+
+    match = re.match(r"^(\d+)$", stem)
+    if match:
+        return int(match.group(1))
+
+    return None
+
+
+def compute_dhash(image: Image.Image, hash_size: int = DUP_HASH_SIZE) -> int:
+    """Compute a difference hash (dHash) as a Python int."""
+    gray = image.convert("L").resize((hash_size + 1, hash_size), Image.Resampling.BILINEAR)
+    pixels = np.asarray(gray, dtype=np.uint8)
+    diff = pixels[:, :-1] > pixels[:, 1:]
+
+    bits = 0
+    for bit in diff.flatten():
+        bits = (bits << 1) | int(bit)
+    return bits
+
+
+def build_image_hash_index(image_dir: Path) -> list[tuple[int, int]]:
+    """Build an in-memory (image_id, dHash) index for near-duplicate lookup."""
+    paths: list[Path] = []
+    for pattern in ("*.png", "*.jpg", "*.jpeg"):
+        paths.extend(image_dir.glob(pattern))
+
+    index: list[tuple[int, int]] = []
+    for path in sorted(paths):
+        image_id = parse_image_id_from_name(path.name)
+        if image_id is None:
+            continue
+        try:
+            with Image.open(path) as img:
+                image_hash = compute_dhash(img.convert("RGB"))
+            index.append((image_id, image_hash))
+        except Exception:
+            # Skip unreadable/corrupt files and continue building the index.
+            continue
+
+    return index
+
+
+def find_near_duplicate(image: Image.Image) -> dict | None:
+    """Find nearest image by dHash and return confidence metadata."""
+    if _state["image_dir"] is None:
+        return None
+
+    if _state["image_hash_index"] is None:
+        _state["image_hash_index"] = build_image_hash_index(_state["image_dir"])
+        print(f"Built near-duplicate hash index: {len(_state['image_hash_index'])} images")
+
+    index: list[tuple[int, int]] = _state["image_hash_index"]
+    if not index:
+        return None
+
+    query_hash = compute_dhash(image)
+    best_id = -1
+    best_distance = 1 << 30
+    second_best_distance = 1 << 30
+
+    for image_id, image_hash in index:
+        distance = (query_hash ^ image_hash).bit_count()
+        if distance < best_distance:
+            second_best_distance = best_distance
+            best_distance = distance
+            best_id = image_id
+        elif distance < second_best_distance:
+            second_best_distance = distance
+
+    if best_id < 0:
+        return None
+
+    gap = second_best_distance - best_distance if second_best_distance < (1 << 29) else 0
+    confident = best_distance <= DUP_MAX_DISTANCE and gap >= DUP_MIN_GAP
+    return {
+        "id": int(best_id),
+        "hashDistance": int(best_distance),
+        "secondBestDistance": int(second_best_distance if second_best_distance < (1 << 29) else -1),
+        "gap": int(gap),
+        "confident": bool(confident),
+    }
+
+
 @app.route("/extract", methods=["POST"])
 def extract():
     """Extract an embedding from an uploaded image."""
@@ -162,6 +258,10 @@ def extract():
         image_file = request.files["image"]
         image = Image.open(image_file.stream).convert("RGB")
         timing["imageLoad_ms"] = (time.perf_counter() - t0) * 1000
+
+        t0 = time.perf_counter()
+        near_duplicate = find_near_duplicate(image)
+        timing["nearDuplicate_ms"] = (time.perf_counter() - t0) * 1000
         
         t0 = time.perf_counter()
         raw_vector = extract_embedding(image)
@@ -172,6 +272,9 @@ def extract():
             "dims": int(raw_vector.shape[1]),
             "timing": timing
         }
+
+        if near_duplicate is not None:
+            result_map["near_duplicate"] = near_duplicate
 
         if _state["pca"] is not None:
             t0 = time.perf_counter()
@@ -196,6 +299,8 @@ def health():
         "vectorCount": len(_state["ids"]) if _state["ids"] is not None else 0,
         "dims": _state["dims"],
         "pcaEnabled": _state["pca"] is not None,
+        "hashIndexReady": _state["image_hash_index"] is not None,
+        "hashIndexCount": len(_state["image_hash_index"]) if _state["image_hash_index"] is not None else 0,
     })
 
 
@@ -386,6 +491,7 @@ def main():
             _state["image_dir"] = None
         else:
             print(f"  Serving images from {_state['image_dir']}")
+            print("  Near-duplicate hash index: lazy init on first /extract request")
     
     print(f"\nStarting server on http://{args.host}:{args.port}")
     app.run(host=args.host, port=args.port, debug=False, threaded=True)

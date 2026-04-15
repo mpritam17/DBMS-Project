@@ -96,6 +96,16 @@ static void test_2d_axis(const char* db_path) {
     assert(res2[0].second == 0 && "nearest to origin must be value 0");
     assert(std::abs(res2[0].first) < 1e-4f && "distance to origin must be ~0");
 
+    // --- Query 2b: exact point search at origin ---
+    RTreeIndex::PointSearchMetrics point_metrics{};
+    auto exact_origin = idx.searchPoint({0.0f, 0.0f}, &point_metrics);
+    assert(!exact_origin.empty() && "point search should find an exact origin match");
+    assert(exact_origin[0] == 0 && "point search should return value 0 at origin");
+    assert(point_metrics.nodes_visited > 0 && "point search should visit at least one node");
+
+    auto exact_missing = idx.searchPoint({123.0f, 456.0f});
+    assert(exact_missing.empty() && "point search should return no match for missing point");
+
     // --- Query 3: k=10 from far away ---
     auto res3 = idx.searchKNN({1000.0f, 0.0f}, 10);
     assert(res3.size() == 10 && "must return all 10 points");
