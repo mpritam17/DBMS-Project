@@ -222,6 +222,10 @@ std::size_t RTreeIndex::getHeight() const {
     return height_;
 }
 
+void RTreeIndex::clearNodeCache() const {
+    node_cache_.clear();
+}
+
 void RTreeIndex::writeMetadata() const {
     Page* page = buffer_pool_manager_->fetchPage(meta_page_id_);
     if (page == nullptr) {

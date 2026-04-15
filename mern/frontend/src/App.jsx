@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
+const IMAGE_SEARCH_REQUEST_TIMEOUT_MS = 600000;
+
 function ImageSearchTab() {
   const [k, setK] = useState(10);
   const [loading, setLoading] = useState(false);
@@ -13,10 +15,31 @@ function ImageSearchTab() {
 
   // Check service status on mount
   useEffect(() => {
-    fetch("/api/image-search/status")
+    let isMounted = true;
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 5000);
+
+    fetch("/api/image-search/status", { signal: controller.signal })
       .then((res) => res.json())
-      .then((data) => setServiceStatus(data))
-      .catch(() => setServiceStatus({ ok: false, service: "unavailable" }));
+      .then((data) => {
+        if (isMounted) {
+          setServiceStatus(data);
+        }
+      })
+      .catch(() => {
+        if (isMounted) {
+          setServiceStatus({ ok: false, service: "unavailable" });
+        }
+      })
+      .finally(() => {
+        clearTimeout(timeoutId);
+      });
+
+    return () => {
+      isMounted = false;
+      clearTimeout(timeoutId);
+      controller.abort();
+    };
   }, []);
 
   const handleFileSelect = useCallback((file) => {
@@ -59,8 +82,12 @@ function ImageSearchTab() {
 
     setLoading(true);
     setError("");
+    let timeoutId;
 
     try {
+      const controller = new AbortController();
+      timeoutId = setTimeout(() => controller.abort(), IMAGE_SEARCH_REQUEST_TIMEOUT_MS);
+
       const formData = new FormData();
       formData.append("image", selectedFile);
       formData.append("k", String(k));
@@ -68,9 +95,24 @@ function ImageSearchTab() {
       const response = await fetch("/api/image-search", {
         method: "POST",
         body: formData,
+        signal: controller.signal,
       });
 
-      const data = await response.json();
+      clearTimeout(timeoutId);
+
+      const rawText = await response.text();
+      let data = null;
+      if (rawText.trim().length > 0) {
+        try {
+          data = JSON.parse(rawText);
+        } catch {
+          throw new Error(`Server returned non-JSON response (status ${response.status})`);
+        }
+      }
+
+      if (!data) {
+        throw new Error(`Server returned empty response (status ${response.status})`);
+      }
 
       if (!response.ok || !data.ok) {
         throw new Error(data.error || "Search failed");
@@ -78,7 +120,14 @@ function ImageSearchTab() {
 
       setResults(data);
     } catch (err) {
-      setError(err.message);
+      if (timeoutId) {
+        clearTimeout(timeoutId);
+      }
+      if (err?.name === "AbortError") {
+        setError("Image search timed out while preparing the index. Keep the backend running and retry; first build can take a few minutes.");
+      } else {
+        setError(err.message || "Search failed");
+      }
       setResults(null);
     } finally {
       setLoading(false);
@@ -104,6 +153,12 @@ function ImageSearchTab() {
             <code style={{ fontSize: 12 }}>
               python scripts/image_search_api.py --vec-file data/sample_vecs.bin --image-dir data/sample_images
             </code>
+          </p>
+        )}
+
+        {serviceStatus?.ok && serviceStatus.indexReady === false && (
+          <p style={{ color: "#0c5460", background: "#d1ecf1", padding: 12, borderRadius: 8 }}>
+            R-tree index is not ready yet. The first search may take a few minutes while the index is built.
           </p>
         )}
 

@@ -40,6 +40,9 @@ public:
     uint16_t getDimensions() const;
     std::size_t getHeight() const;
 
+    // Clears decoded-node cache so subsequent reads go through the buffer pool.
+    void clearNodeCache() const;
+
 private:
     struct SplitResult {
         bool did_split;

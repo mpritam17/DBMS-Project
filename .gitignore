@@ -9,6 +9,8 @@ storage_smoke
 *.o
 *.so
 *.rtree_tmp.db
+*.rtree_tmp.db.state
+*.kd_tmp.bin
 *.sqlite_tmp.db
 
 node_modules/

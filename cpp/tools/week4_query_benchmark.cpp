@@ -19,6 +19,7 @@
 #include <queue>
 #include <stdexcept>
 #include <string>
+#include <system_error>
 #include <tuple>
 #include <unordered_map>
 #include <utility>
@@ -28,6 +29,8 @@ namespace {
 
 constexpr uint32_t kSlottedPageMagic = 0x50414745;  // "PAGE"
 constexpr uint32_t kRTreeMetaMagic = 0x52544958;    // 'RTIX'
+constexpr char kKdCacheMagic[8] = {'K', 'D', 'C', 'A', 'C', 'H', 'E', '1'};
+constexpr uint32_t kKdCacheVersion = 1;
 
 struct StoredVector {
     uint64_t id;
@@ -86,21 +89,85 @@ struct KDSearchMetrics {
 
 class KDTree {
 public:
+    struct SerializedNode {
+        uint32_t point_index = 0;
+        uint32_t split_axis = 0;
+        int32_t left_child = -1;
+        int32_t right_child = -1;
+    };
+
     KDTree(const std::vector<StoredVector>& vectors, std::size_t dimensions)
         : dimensions_(dimensions) {
-        if (dimensions_ == 0) {
-            throw std::invalid_argument("KD-tree requires dimensions >= 1");
-        }
-
-        points_.reserve(vectors.size());
-        for (const auto& vec : vectors) {
-            points_.push_back({vec.id, &vec.values});
-        }
+        initializePointRefs(vectors);
 
         std::vector<std::size_t> point_indices(points_.size());
         std::iota(point_indices.begin(), point_indices.end(), 0);
         nodes_.reserve(points_.size());
         root_index_ = buildRecursive(point_indices, 0, point_indices.size(), 0);
+    }
+
+    KDTree(
+        const std::vector<StoredVector>& vectors,
+        std::size_t dimensions,
+        const std::vector<SerializedNode>& serialized_nodes,
+        int root_index)
+        : dimensions_(dimensions), root_index_(root_index) {
+        initializePointRefs(vectors);
+
+        nodes_.reserve(serialized_nodes.size());
+        const int max_index = static_cast<int>(serialized_nodes.size()) - 1;
+        for (const auto& node : serialized_nodes) {
+            if (node.point_index >= points_.size()) {
+                throw std::runtime_error("KD cache node references out-of-range point index");
+            }
+            if (node.split_axis >= dimensions_) {
+                throw std::runtime_error("KD cache node has invalid split axis");
+            }
+            if (node.left_child < -1 || node.left_child > max_index
+                || node.right_child < -1 || node.right_child > max_index) {
+                throw std::runtime_error("KD cache node has out-of-range child index");
+            }
+
+            nodes_.push_back({
+                static_cast<std::size_t>(node.point_index),
+                static_cast<std::size_t>(node.split_axis),
+                static_cast<int>(node.left_child),
+                static_cast<int>(node.right_child),
+            });
+        }
+
+        if (nodes_.empty()) {
+            if (!points_.empty()) {
+                throw std::runtime_error("KD cache has no nodes for non-empty dataset");
+            }
+            if (root_index_ != -1) {
+                throw std::runtime_error("KD cache root index must be -1 for empty dataset");
+            }
+            return;
+        }
+
+        const int rebuilt_max_index = static_cast<int>(nodes_.size()) - 1;
+        if (root_index_ < 0 || root_index_ > rebuilt_max_index) {
+            throw std::runtime_error("KD cache root index is out of range");
+        }
+    }
+
+    int getRootIndex() const {
+        return root_index_;
+    }
+
+    std::vector<SerializedNode> exportNodes() const {
+        std::vector<SerializedNode> out;
+        out.reserve(nodes_.size());
+        for (const auto& node : nodes_) {
+            out.push_back({
+                static_cast<uint32_t>(node.point_index),
+                static_cast<uint32_t>(node.split_axis),
+                static_cast<int32_t>(node.left_child),
+                static_cast<int32_t>(node.right_child),
+            });
+        }
+        return out;
     }
 
     std::vector<std::pair<float, uint64_t>> searchKNN(
@@ -112,6 +179,9 @@ public:
         }
         if (query.size() != dimensions_) {
             throw std::invalid_argument("KD-tree query dimensions do not match tree dimensions");
+        }
+        if (root_index_ < 0) {
+            return {};
         }
 
         KDSearchMetrics local_metrics{};
@@ -125,17 +195,18 @@ public:
 
             ++local_metrics.nodes_visited;
             const KDNode& node = nodes_[static_cast<std::size_t>(node_index)];
+            const KDPointRef& point = points_[node.point_index];
 
-            const double dist_sq = l2DistanceSq(query, *node.coordinates);
+            const double dist_sq = l2DistanceSq(query, *point.coordinates);
             if (best.size() < k || dist_sq < best.top().first) {
-                best.push({dist_sq, node.value});
+                best.push({dist_sq, point.value});
                 if (best.size() > k) {
                     best.pop();
                 }
             }
 
             const double delta = static_cast<double>(query[node.split_axis])
-                               - static_cast<double>((*node.coordinates)[node.split_axis]);
+                               - static_cast<double>((*point.coordinates)[node.split_axis]);
             const int near_child = delta <= 0.0 ? node.left_child : node.right_child;
             const int far_child = delta <= 0.0 ? node.right_child : node.left_child;
 
@@ -171,12 +242,22 @@ private:
     };
 
     struct KDNode {
-        uint64_t value = 0;
-        const std::vector<float>* coordinates = nullptr;
+        std::size_t point_index = 0;
         std::size_t split_axis = 0;
         int left_child = -1;
         int right_child = -1;
     };
+
+    void initializePointRefs(const std::vector<StoredVector>& vectors) {
+        if (dimensions_ == 0) {
+            throw std::invalid_argument("KD-tree requires dimensions >= 1");
+        }
+
+        points_.reserve(vectors.size());
+        for (const auto& vec : vectors) {
+            points_.push_back({vec.id, &vec.values});
+        }
+    }
 
     int buildRecursive(
         std::vector<std::size_t>& point_indices,
@@ -200,8 +281,7 @@ private:
         const std::size_t point_idx = point_indices[mid];
         const int node_index = static_cast<int>(nodes_.size());
         nodes_.push_back({
-            points_[point_idx].value,
-            points_[point_idx].coordinates,
+            point_idx,
             axis,
             -1,
             -1,
@@ -307,6 +387,208 @@ std::size_t recallAtK(
 std::size_t computeAutoBpmPages(std::uint64_t index_page_count) {
     const std::size_t target = static_cast<std::size_t>(index_page_count) + kAutoBpmHeadroomPages;
     return std::max(kAutoBpmMinPages, std::min(kAutoBpmMaxPages, target));
+}
+
+template <typename T>
+void writeBinary(std::ofstream& out, const T& value, const char* field_name) {
+    out.write(reinterpret_cast<const char*>(&value), static_cast<std::streamsize>(sizeof(T)));
+    if (!out) {
+        throw std::runtime_error(std::string("Failed to write KD cache field: ") + field_name);
+    }
+}
+
+template <typename T>
+T readBinary(std::ifstream& in, const char* field_name) {
+    T value{};
+    in.read(reinterpret_cast<char*>(&value), static_cast<std::streamsize>(sizeof(T)));
+    if (!in) {
+        throw std::runtime_error(std::string("Failed to read KD cache field: ") + field_name);
+    }
+    return value;
+}
+
+void fnv1aUpdate(std::uint64_t* hash, const void* data, std::size_t size_bytes) {
+    const auto* bytes = static_cast<const uint8_t*>(data);
+    for (std::size_t i = 0; i < size_bytes; ++i) {
+        *hash ^= static_cast<std::uint64_t>(bytes[i]);
+        *hash *= 1099511628211ULL;
+    }
+}
+
+std::uint64_t computeVectorFingerprint(const std::vector<StoredVector>& vectors, uint16_t expected_dims) {
+    std::uint64_t hash = 1469598103934665603ULL;
+    const std::uint64_t vector_count = static_cast<std::uint64_t>(vectors.size());
+    fnv1aUpdate(&hash, &expected_dims, sizeof(expected_dims));
+    fnv1aUpdate(&hash, &vector_count, sizeof(vector_count));
+
+    for (const auto& vec : vectors) {
+        if (vec.values.size() != expected_dims) {
+            throw std::runtime_error("Vector dimensions changed while computing KD fingerprint");
+        }
+        fnv1aUpdate(&hash, &vec.id, sizeof(vec.id));
+        if (!vec.values.empty()) {
+            fnv1aUpdate(&hash, vec.values.data(), vec.values.size() * sizeof(float));
+        }
+    }
+
+    return hash;
+}
+
+bool loadPersistentKDTree(
+    const std::string& cache_file,
+    const std::vector<StoredVector>& vectors,
+    uint16_t dims,
+    std::uint64_t expected_fingerprint,
+    std::unique_ptr<KDTree>* out_tree,
+    std::string* out_status) {
+    if (out_tree == nullptr) {
+        throw std::invalid_argument("loadPersistentKDTree requires a non-null out_tree");
+    }
+    out_tree->reset();
+
+    if (!std::filesystem::exists(cache_file)) {
+        if (out_status != nullptr) {
+            *out_status = "missing";
+        }
+        return false;
+    }
+
+    try {
+        std::ifstream in(cache_file, std::ios::binary);
+        if (!in.is_open()) {
+            if (out_status != nullptr) {
+                *out_status = "open-failed";
+            }
+            return false;
+        }
+
+        char magic[sizeof(kKdCacheMagic)] = {};
+        in.read(magic, static_cast<std::streamsize>(sizeof(magic)));
+        if (!in || std::memcmp(magic, kKdCacheMagic, sizeof(magic)) != 0) {
+            if (out_status != nullptr) {
+                *out_status = "invalid-magic";
+            }
+            return false;
+        }
+
+        const uint32_t version = readBinary<uint32_t>(in, "version");
+        if (version != kKdCacheVersion) {
+            if (out_status != nullptr) {
+                *out_status = "stale-version";
+            }
+            return false;
+        }
+
+        const uint16_t cache_dims = readBinary<uint16_t>(in, "dims");
+        const std::uint64_t cache_vector_count = readBinary<std::uint64_t>(in, "vector_count");
+        const std::uint64_t cache_fingerprint = readBinary<std::uint64_t>(in, "fingerprint");
+        const int32_t cache_root_index = readBinary<int32_t>(in, "root_index");
+        const std::uint64_t cache_node_count = readBinary<std::uint64_t>(in, "node_count");
+
+        if (cache_dims != dims) {
+            if (out_status != nullptr) {
+                *out_status = "stale-dims";
+            }
+            return false;
+        }
+
+        if (cache_vector_count != static_cast<std::uint64_t>(vectors.size())) {
+            if (out_status != nullptr) {
+                *out_status = "stale-count";
+            }
+            return false;
+        }
+
+        if (cache_fingerprint != expected_fingerprint) {
+            if (out_status != nullptr) {
+                *out_status = "stale-fingerprint";
+            }
+            return false;
+        }
+
+        if (cache_node_count > static_cast<std::uint64_t>(vectors.size())) {
+            if (out_status != nullptr) {
+                *out_status = "invalid-node-count";
+            }
+            return false;
+        }
+
+        std::vector<KDTree::SerializedNode> nodes;
+        nodes.reserve(static_cast<std::size_t>(cache_node_count));
+        for (std::uint64_t i = 0; i < cache_node_count; ++i) {
+            const uint32_t point_index = readBinary<uint32_t>(in, "node.point_index");
+            const uint32_t split_axis = readBinary<uint32_t>(in, "node.split_axis");
+            const int32_t left_child = readBinary<int32_t>(in, "node.left_child");
+            const int32_t right_child = readBinary<int32_t>(in, "node.right_child");
+            nodes.push_back({point_index, split_axis, left_child, right_child});
+        }
+
+        *out_tree = std::make_unique<KDTree>(vectors, dims, nodes, static_cast<int>(cache_root_index));
+        if (out_status != nullptr) {
+            *out_status = "loaded";
+        }
+        return true;
+    } catch (...) {
+        if (out_status != nullptr) {
+            *out_status = "invalid";
+        }
+        return false;
+    }
+}
+
+bool savePersistentKDTree(
+    const std::string& cache_file,
+    const KDTree& tree,
+    const std::vector<StoredVector>& vectors,
+    uint16_t dims,
+    std::uint64_t fingerprint) {
+    const std::filesystem::path target_path(cache_file);
+    const std::filesystem::path temp_path = target_path.string() + ".tmp";
+
+    try {
+        std::ofstream out(temp_path, std::ios::binary | std::ios::trunc);
+        if (!out.is_open()) {
+            return false;
+        }
+
+        out.write(kKdCacheMagic, static_cast<std::streamsize>(sizeof(kKdCacheMagic)));
+        if (!out) {
+            return false;
+        }
+
+        const auto nodes = tree.exportNodes();
+        writeBinary<uint32_t>(out, kKdCacheVersion, "version");
+        writeBinary<uint16_t>(out, dims, "dims");
+        writeBinary<std::uint64_t>(out, static_cast<std::uint64_t>(vectors.size()), "vector_count");
+        writeBinary<std::uint64_t>(out, fingerprint, "fingerprint");
+        writeBinary<int32_t>(out, static_cast<int32_t>(tree.getRootIndex()), "root_index");
+        writeBinary<std::uint64_t>(out, static_cast<std::uint64_t>(nodes.size()), "node_count");
+
+        for (const auto& node : nodes) {
+            writeBinary<uint32_t>(out, node.point_index, "node.point_index");
+            writeBinary<uint32_t>(out, node.split_axis, "node.split_axis");
+            writeBinary<int32_t>(out, node.left_child, "node.left_child");
+            writeBinary<int32_t>(out, node.right_child, "node.right_child");
+        }
+
+        out.flush();
+        out.close();
+
+        std::error_code ec;
+        std::filesystem::remove(target_path, ec);
+        ec.clear();
+        std::filesystem::rename(temp_path, target_path, ec);
+        if (ec) {
+            std::filesystem::remove(temp_path, ec);
+            return false;
+        }
+
+        return true;
+    } catch (...) {
+        std::error_code ec;
+        std::filesystem::remove(temp_path, ec);
+        return false;
+    }
 }
 
 void warmIndexCache(BufferPoolManager& bpm, std::uint64_t page_count) {
@@ -651,13 +933,36 @@ int main(int argc, char** argv) {
             return a.id < b.id;
         });
 
+        const std::string kd_cache_file = db_file + ".kd_tmp.bin";
+        std::string kd_cache_status = options.point_only ? "point-only-skip" : "missing";
         std::unique_ptr<KDTree> kd_tree;
         long long kd_build_us = 0;
         if (!options.point_only) {
-            const auto kd_build_start = std::chrono::high_resolution_clock::now();
-            kd_tree = std::make_unique<KDTree>(unique_vectors, dims);
-            const auto kd_build_end = std::chrono::high_resolution_clock::now();
-            kd_build_us = std::chrono::duration_cast<std::chrono::microseconds>(kd_build_end - kd_build_start).count();
+            const std::uint64_t kd_fingerprint = computeVectorFingerprint(unique_vectors, dims);
+            if (!loadPersistentKDTree(
+                    kd_cache_file,
+                    unique_vectors,
+                    dims,
+                    kd_fingerprint,
+                    &kd_tree,
+                    &kd_cache_status)) {
+                const auto kd_build_start = std::chrono::high_resolution_clock::now();
+                kd_tree = std::make_unique<KDTree>(unique_vectors, dims);
+                const auto kd_build_end = std::chrono::high_resolution_clock::now();
+                kd_build_us = std::chrono::duration_cast<std::chrono::microseconds>(kd_build_end - kd_build_start).count();
+
+                const bool cache_saved = savePersistentKDTree(
+                    kd_cache_file,
+                    *kd_tree,
+                    unique_vectors,
+                    dims,
+                    kd_fingerprint);
+                if (cache_saved) {
+                    kd_cache_status = kd_cache_status == "missing" ? "built-saved" : "rebuilt-saved";
+                } else {
+                    kd_cache_status = kd_cache_status == "missing" ? "built-unsaved" : "rebuilt-unsaved";
+                }
+            }
         }
 
         std::vector<uint64_t> query_ids;
@@ -744,10 +1049,6 @@ int main(int argc, char** argv) {
                 }
             }
         }
-
-        bpm.resetStats();
-        StorageManager::disk_reads = 0;
-        StorageManager::disk_writes = 0;
 
         std::vector<std::pair<float, uint64_t>> out_results;
         std::vector<uint64_t> out_point_matches;
@@ -850,6 +1151,8 @@ int main(int argc, char** argv) {
         std::cout << "  point_only_mode: " << (options.point_only ? "on" : "off") << "\n";
         std::cout << "  bpm_pages: " << options.bpm_pages << "\n";
         std::cout << "  kd_build_us: " << kd_build_us << "\n";
+        std::cout << "  kd_cache_file: " << kd_cache_file << "\n";
+        std::cout << "  kd_cache_status: " << kd_cache_status << "\n";
         std::cout << "\n";
         std::cout << "Average R-tree KNN latency: " << avg_rtree_us << " us\n";
         std::cout << "Average KD-tree latency: " << avg_kd_us << " us\n";
